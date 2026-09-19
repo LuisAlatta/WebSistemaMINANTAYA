@@ -8,6 +8,7 @@ import { dashboardRoutes } from './dashboard/routes';
 import { auditRoutes } from './audit/routes';
 import { documentRoutes } from './documents/routes';
 import { settlementGuideRoutes, settlementRoutes } from './settlements/routes';
+import { masterRoutes } from './masters/routes';
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -33,6 +34,7 @@ app.route('/api/audit-logs', auditRoutes);
 app.route('/api/documents', documentRoutes);
 app.route('/api/guides', settlementGuideRoutes);
 app.route('/api/purchase-proposals', settlementRoutes);
+app.route('/api', masterRoutes);
 
 export default {
   fetch(request, env, context) {
