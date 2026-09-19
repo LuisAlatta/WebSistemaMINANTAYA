@@ -21,15 +21,7 @@ app.onError((error, context) => {
     });
   }
 
-  const detail = error instanceof Error ? error.message.slice(0, 500) : 'Error no identificable';
   console.error(error);
-  context.executionCtx.waitUntil(
-    context.env.DB.prepare(
-      `INSERT INTO audit_logs (
-        id, actor_username, actor_source, action, entity_type, entity_id, reason, created_at
-      ) VALUES (?, 'system', 'system', 'FAILED', 'request', ?, ?, ?)`,
-    ).bind(crypto.randomUUID(), context.req.path, detail, new Date().toISOString()).run().catch(() => undefined),
-  );
   return context.json({ error: 'INTERNAL_ERROR', message: 'Ocurrió un error inesperado.' }, 500);
 });
 

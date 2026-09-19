@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 import { HttpError } from '../http/errors';
 
-const passwordIterations = 310_000;
+// Cloudflare Workers admite hasta 100 000 iteraciones de PBKDF2.
+const passwordIterations = 100_000;
 const sessionDurationSeconds = 12 * 60 * 60;
 const loginWindowMilliseconds = 15 * 60 * 1_000;
 const loginLockMilliseconds = 15 * 60 * 1_000;
