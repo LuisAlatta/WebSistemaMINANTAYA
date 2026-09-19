@@ -6,6 +6,7 @@ import { guideRoutes } from './guides/routes';
 import { financeRoutes } from './finance/routes';
 import { dashboardRoutes } from './dashboard/routes';
 import { auditRoutes } from './audit/routes';
+import { documentRoutes } from './documents/routes';
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -28,6 +29,7 @@ app.route('/api/guides', guideRoutes);
 app.route('/api', financeRoutes);
 app.route('/api/dashboard', dashboardRoutes);
 app.route('/api/audit-logs', auditRoutes);
+app.route('/api/documents', documentRoutes);
 
 export default {
   fetch(request, env, context) {
