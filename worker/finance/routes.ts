@@ -41,6 +41,8 @@ const paymentSchema = z.object({
   if (value.paymentType.includes('TRANSPORTE') !== Boolean(value.transportInvoiceId)) context.addIssue({ code: 'custom', message: 'El tipo de pago no coincide con la factura.' });
 });
 
+const exchangeRateSchema = z.object({ rateDate: z.iso.date(), usdToPen: z.number().positive().max(20) });
+
 export const financeRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
 financeRoutes.post('/commercial-invoices', async (context) => {
@@ -109,4 +111,20 @@ financeRoutes.post('/payments', async (context) => {
   }
   await executeAtomically(db, statements);
   return context.json({ id, status: 'CONFIRMADO' }, 201);
+});
+
+financeRoutes.post('/exchange-rates', async (context) => {
+  const parsed = exchangeRateSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  const input = parsed.data; const db = context.env.DB; const actor = context.get('actor'); const now = new Date().toISOString();
+  const previous = await db.prepare('SELECT id, usd_to_pen FROM exchange_rates WHERE rate_date = ?').bind(input.rateDate).first<{ id: string; usd_to_pen: number }>();
+  const id = previous?.id ?? crypto.randomUUID();
+  const after = { id, rateDate: input.rateDate, usdToPen: input.usdToPen, source: 'Caja Arequipa' };
+  await executeAtomically(db, [
+    previous
+      ? db.prepare('UPDATE exchange_rates SET usd_to_pen = ?, source = ?, updated_at = ? WHERE id = ?').bind(input.usdToPen, 'Caja Arequipa', now, id)
+      : db.prepare('INSERT INTO exchange_rates (id, rate_date, source, usd_to_pen, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').bind(id, input.rateDate, 'Caja Arequipa', input.usdToPen, now, now),
+    prepareAuditLog({ db, actor, action: previous ? 'UPDATED' : 'CREATED', entityType: 'exchange_rate', entityId: id, before: previous ? { usdToPen: previous.usd_to_pen } : undefined, after, occurredAt: now }),
+  ]);
+  return context.json(after, previous ? 200 : 201);
 });
