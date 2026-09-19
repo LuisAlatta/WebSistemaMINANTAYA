@@ -5,6 +5,7 @@ import { requireActor, type AppVariables } from './http/middleware';
 import { guideRoutes } from './guides/routes';
 import { financeRoutes } from './finance/routes';
 import { dashboardRoutes } from './dashboard/routes';
+import { auditRoutes } from './audit/routes';
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -26,6 +27,7 @@ app.get('/api/health', (context) => context.json({ status: 'ok' }));
 app.route('/api/guides', guideRoutes);
 app.route('/api', financeRoutes);
 app.route('/api/dashboard', dashboardRoutes);
+app.route('/api/audit-logs', auditRoutes);
 
 export default {
   fetch(request, env, context) {
