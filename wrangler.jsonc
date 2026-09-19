@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "minantaya-sistema",
+  "account_id": "0acfa25b5f619f94d581b8cf882e2eec",
   "main": "worker/index.ts",
   "compatibility_date": "2026-09-18",
   "compatibility_flags": ["nodejs_compat"],
@@ -12,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "minantaya-db",
-      "database_id": "local-minantaya-db",
+      "database_id": "5b701264-4246-4025-b54c-d795e50f9312",
       "migrations_dir": "migrations"
     }
   ],
