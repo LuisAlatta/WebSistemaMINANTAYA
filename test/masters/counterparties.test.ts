@@ -7,7 +7,7 @@ describe('counterparties API', () => {
   it('registers a supplier and lists active counterparties', async () => {
     const created = await worker.fetch(new Request('https://app.test/api/counterparties', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ type: 'PROVEEDOR', legalName: 'Proveedor QA SAC', documentNumber: '20123456789' }) }), env, createExecutionContext());
     expect(created.status).toBe(201);
-    const listed = await worker.fetch(new Request('https://app.test/api/counterparties?type=PROVEEDOR'), env, createExecutionContext());
+    const listed = await worker.fetch(new Request('https://app.test/api/counterparties?type=PROVEEDOR', { headers: { 'x-dev-actor': 'admin@test.pe' } }), env, createExecutionContext());
     await expect(listed.json()).resolves.toMatchObject({ items: [expect.objectContaining({ legalName: 'Proveedor QA SAC', type: 'PROVEEDOR' })] });
   });
 });

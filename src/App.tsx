@@ -26,10 +26,6 @@ const statusClass: Record<string, string> = {
   FACTURADA: 'bg-[#e7e1f3] text-[#4d3f73]',
 };
 
-function developmentActor(): HeadersInit {
-  return import.meta.env.DEV ? { 'x-dev-actor': 'admin@minantaya.local' } : {};
-}
-
 export function App() {
   const [activeSection, setActiveSection] = useState('Inicio');
   const [guides, setGuides] = useState<Guide[]>([]);
@@ -38,6 +34,10 @@ export function App() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [username, setUsername] = useState<string | null>(null);
+  const [isAuthResolved, setIsAuthResolved] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'setup'>('login');
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
 
   async function loadGuides() {
     setIsLoading(true);
@@ -64,7 +64,59 @@ export function App() {
     }
   }
 
-  useEffect(() => { void loadGuides(); void loadDashboard(); }, []);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch('/api/auth/me');
+        if (response.ok) {
+          const payload = (await response.json()) as { username: string };
+          setUsername(payload.username);
+          await Promise.all([loadGuides(), loadDashboard()]);
+        }
+      } finally {
+        setIsAuthResolved(true);
+      }
+    })();
+  }, []);
+
+  async function submitAuthentication(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setIsAuthenticating(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/auth/${authMode}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          username: String(form.get('username') ?? ''),
+          password: String(form.get('password') ?? ''),
+          ...(authMode === 'setup' ? { activationKey: String(form.get('activationKey') ?? '') } : {}),
+        }),
+      });
+      const payload = (await response.json()) as { username?: string; message?: string };
+      if (!response.ok) {
+        if (authMode === 'setup' && response.status === 409) {
+          setAuthMode('login');
+          throw new Error('La primera cuenta ya existe. Ingresa con tu usuario.');
+        }
+        throw new Error(payload.message ?? 'No se pudo iniciar sesión.');
+      }
+      setUsername(payload.username ?? null);
+      await Promise.all([loadGuides(), loadDashboard()]);
+    } catch (authError) {
+      setError(authError instanceof Error ? authError.message : 'No se pudo iniciar sesión.');
+    } finally {
+      setIsAuthenticating(false);
+    }
+  }
+
+  async function logout() {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    setUsername(null);
+    setGuides([]);
+    setDashboard({ pendingLaws: 0, pendingProposal: 0, openAlerts: 0, missingTransportInvoice: 0 });
+  }
 
   async function registerGuide(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -79,7 +131,7 @@ export function App() {
     try {
       const response = await fetch('/api/guides', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...developmentActor() },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           gre: String(form.get('gre') ?? ''),
           issuedAt: new Date(`${date}T12:00:00.000Z`).toISOString(),
@@ -99,6 +151,30 @@ export function App() {
     }
   }
 
+  if (!isAuthResolved) {
+    return <main className="grid min-h-[100dvh] place-items-center bg-[#f4f7f6] text-[#10242b]"><p className="text-sm text-[#54716f]">Cargando sistema…</p></main>;
+  }
+
+  if (!username) {
+    return (
+      <main className="grid min-h-[100dvh] place-items-center bg-[#f4f7f6] px-4 text-[#10242b]">
+        <section className="w-full max-w-md border border-[#cfdcd7] bg-white p-7 shadow-sm">
+          <p className="text-xs font-semibold tracking-[0.2em] text-[#54716f]">MINANTAYA</p>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight">{authMode === 'login' ? 'Ingresar al control minero' : 'Crear primera cuenta'}</h1>
+          <p className="mt-2 text-sm leading-6 text-[#607876]">{authMode === 'login' ? 'Usa tu nombre de usuario y contraseña.' : 'Esta cuenta tendrá control administrativo total. Requiere la clave de activación entregada al responsable.'}</p>
+          {error && <p className="mt-5 rounded-lg border border-[#c97965] bg-[#fff3f0] px-4 py-3 text-sm text-[#7f301f]" role="alert">{error}</p>}
+          <form className="mt-6 grid gap-4" onSubmit={submitAuthentication}>
+            <label className="grid gap-1.5 text-sm font-medium">Usuario<input autoComplete="username" className="rounded-md border border-[#b9cbc4] bg-white px-3 py-2" name="username" minLength={3} pattern="[A-Za-z0-9._-]+" required /></label>
+            <label className="grid gap-1.5 text-sm font-medium">Contraseña<input autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} className="rounded-md border border-[#b9cbc4] bg-white px-3 py-2" name="password" minLength={12} required type="password" /></label>
+            {authMode === 'setup' && <label className="grid gap-1.5 text-sm font-medium">Clave de activación<input autoComplete="off" className="rounded-md border border-[#b9cbc4] bg-white px-3 py-2" name="activationKey" minLength={24} required type="password" /></label>}
+            <button className="rounded-md bg-[#2e6b61] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60" disabled={isAuthenticating} type="submit">{isAuthenticating ? 'Validando…' : authMode === 'login' ? 'Ingresar' : 'Crear cuenta'}</button>
+          </form>
+          <button className="mt-5 text-sm font-medium text-[#2e6b61] underline underline-offset-4" onClick={() => { setAuthMode(authMode === 'login' ? 'setup' : 'login'); setError(null); }} type="button">{authMode === 'login' ? '¿Es la primera vez? Crear cuenta inicial' : 'Ya existe una cuenta, ingresar'}</button>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-[100dvh] bg-[#f4f7f6] text-[#10242b]">
       <div className="grid min-h-[100dvh] lg:grid-cols-[232px_minmax(0,1fr)]">
@@ -107,7 +183,7 @@ export function App() {
           <nav aria-label="Secciones del sistema" className="grid gap-1 sm:grid-cols-2 lg:grid-cols-1">
             {navigation.map((item) => <button aria-current={activeSection === item ? 'page' : undefined} className={`rounded-lg px-3 py-2.5 text-left text-sm font-medium transition ${activeSection === item ? 'bg-[#e6f0c9] text-[#17333a]' : 'text-[#c8d8d2] hover:bg-[#183941] hover:text-white'}`} key={item} onClick={() => setActiveSection(item)} type="button">{item}</button>)}
           </nav>
-          <div className="mt-10 border-t border-[#31515a] pt-5 text-xs text-[#a9c4ba]">Entorno local activo</div>
+          <div className="mt-10 border-t border-[#31515a] pt-5"><p className="text-xs text-[#a9c4ba]">Sesión: {username}</p><button className="mt-2 text-xs font-semibold text-[#e6f0c9] underline underline-offset-4" onClick={() => void logout()} type="button">Cerrar sesión</button></div>
         </aside>
         <section className="px-4 py-6 sm:px-8 lg:px-12 lg:py-10"><div className="mx-auto max-w-[1400px]">
           <header className="flex flex-col gap-5 border-b border-[#d9e2df] pb-7 md:flex-row md:items-end md:justify-between"><div><p className="text-sm font-medium text-[#54716f]">Vista operativa</p><h2 className="mt-1 text-3xl font-semibold tracking-tight">Control de operaciones</h2><p className="mt-2 max-w-[62ch] text-sm leading-6 text-[#607876]">Guías, lotes, calidad, liquidación, facturación y transporte en una sola trazabilidad.</p></div><button className="rounded-lg bg-[#2e6b61] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#24584f]" onClick={() => setIsFormOpen(true)} type="button">Registrar guía</button></header>

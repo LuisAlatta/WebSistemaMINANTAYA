@@ -9,6 +9,7 @@ import { auditRoutes } from './audit/routes';
 import { documentRoutes } from './documents/routes';
 import { settlementGuideRoutes, settlementRoutes } from './settlements/routes';
 import { masterRoutes } from './masters/routes';
+import { authRoutes } from './auth/routes';
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -27,6 +28,7 @@ app.onError((error, context) => {
 app.use('/api/*', requireActor);
 
 app.get('/api/health', (context) => context.json({ status: 'ok' }));
+app.route('/api/auth', authRoutes);
 app.route('/api/guides', guideRoutes);
 app.route('/api', financeRoutes);
 app.route('/api/dashboard', dashboardRoutes);

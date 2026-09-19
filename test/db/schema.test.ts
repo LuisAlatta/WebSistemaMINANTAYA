@@ -29,7 +29,7 @@ describe('D1 schema', () => {
   it('does not allow audit records to be changed or deleted', async () => {
     await env.DB.prepare(
       `INSERT INTO audit_logs (
-        id, actor_email, actor_source, action, entity_type, entity_id, created_at
+        id, actor_username, actor_source, action, entity_type, entity_id, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
       .bind(

@@ -22,13 +22,13 @@ export function prepareAuditLog(input: AuditInput): D1PreparedStatement {
   return input.db
     .prepare(
       `INSERT INTO audit_logs (
-        id, actor_email, actor_source, action, entity_type, entity_id,
+        id, actor_username, actor_source, action, entity_type, entity_id,
         before_json, after_json, reason, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       input.id ?? crypto.randomUUID(),
-      input.actor.email,
+      input.actor.username,
       input.actor.source,
       input.action,
       input.entityType,

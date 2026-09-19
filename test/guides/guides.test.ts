@@ -37,9 +37,9 @@ describe('guides API', () => {
     });
 
     const audit = await env.DB.prepare(
-      "SELECT action, actor_email FROM audit_logs WHERE entity_type = 'guide' AND action = 'CREATED'",
+      "SELECT action, actor_username FROM audit_logs WHERE entity_type = 'guide' AND action = 'CREATED'",
     ).first();
-    expect(audit).toMatchObject({ action: 'CREATED', actor_email: 'admin@test.pe' });
+    expect(audit).toMatchObject({ action: 'CREATED', actor_username: 'admin@test.pe' });
   });
 
   it('creates an open warning when a guide has more than six lots', async () => {
@@ -110,7 +110,7 @@ describe('guides API', () => {
 
   it('lists registered guides with their lot count', async () => {
     const response = await worker.fetch(
-      new Request('https://app.test/api/guides'),
+      new Request('https://app.test/api/guides', { headers: { 'x-dev-actor': 'admin@test.pe' } }),
       env,
       createExecutionContext(),
     );

@@ -13,7 +13,7 @@ describe('audit log', () => {
   it('records before and after JSON for a guide status change', async () => {
     await writeAuditLog({
       db: env.DB,
-      actor: { email: 'admin@test.pe', source: 'local' },
+      actor: { username: 'admin@test.pe', source: 'local' },
       entityType: 'guide',
       entityId: 'g1',
       action: 'STATUS_CHANGED',
@@ -22,13 +22,13 @@ describe('audit log', () => {
     });
 
     const row = await env.DB.prepare(
-      'SELECT actor_email, action, before_json, after_json FROM audit_logs WHERE entity_id = ?',
+      'SELECT actor_username, action, before_json, after_json FROM audit_logs WHERE entity_id = ?',
     )
       .bind('g1')
       .first();
 
     expect(row).toMatchObject({
-      actor_email: 'admin@test.pe',
+      actor_username: 'admin@test.pe',
       action: 'STATUS_CHANGED',
       before_json: JSON.stringify({ status: 'EMITIDA' }),
       after_json: JSON.stringify({ status: 'EN_PLANTA' }),

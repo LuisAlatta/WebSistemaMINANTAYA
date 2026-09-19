@@ -26,7 +26,7 @@ export type GuideRow = {
 
 export type AuditLogRow = {
   id: string;
-  actor_email: string;
+  actor_username: string;
   actor_source: 'access' | 'local';
   action: string;
   entity_type: string;

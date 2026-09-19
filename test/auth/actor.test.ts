@@ -10,7 +10,7 @@ describe('resolveActor', () => {
         undefined,
         'development',
       ),
-    ).resolves.toEqual({ email: 'admin@test.pe', source: 'local' });
+    ).resolves.toEqual({ username: 'admin@test.pe', source: 'local' });
 
     await expect(
       resolveActor(
