@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 
 import type { AppVariables } from '../http/middleware';
 import { HttpError } from '../http/errors';
-import { assayReportSchema, recordAssayReport } from '../quality/service';
+import { assayReportSchema, openDispute, openResample, qualityExceptionSchema, recordAssayReport } from '../quality/service';
 import {
   changeGuideStatus,
   changeGuideStatusSchema,
@@ -58,4 +58,16 @@ guideRoutes.post('/:id/assay-reports', async (context) => {
   if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
   const report = await recordAssayReport(context.env.DB, context.get('actor'), context.req.param('id'), parsed.data);
   return context.json(report, 201);
+});
+
+guideRoutes.post('/:id/resamples', async (context) => {
+  const parsed = qualityExceptionSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  return context.json(await openResample(context.env.DB, context.get('actor'), context.req.param('id'), parsed.data.reason), 201);
+});
+
+guideRoutes.post('/:id/disputes', async (context) => {
+  const parsed = qualityExceptionSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  return context.json(await openDispute(context.env.DB, context.get('actor'), context.req.param('id'), parsed.data.reason), 201);
 });

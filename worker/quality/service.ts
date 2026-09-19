@@ -11,6 +11,8 @@ export const assayReportSchema = z.object({
   results: z.array(z.object({ lotId: z.string().uuid(), element: z.string().trim().min(1).max(20), resultValue: z.number().finite(), unit: z.string().trim().min(1).max(20) })).min(1),
 });
 
+export const qualityExceptionSchema = z.object({ reason: z.string().trim().min(3).max(1_000) });
+
 export async function recordAssayReport(db: D1Database, actor: Actor, guideId: string, input: z.infer<typeof assayReportSchema>) {
   const guide = await db.prepare('SELECT id, status FROM guides WHERE id = ?').bind(guideId).first<{ id: string; status: string }>();
   if (!guide) throw new HttpError(404, 'La guía no existe.', 'GUIDE_NOT_FOUND');
@@ -34,4 +36,36 @@ export async function recordAssayReport(db: D1Database, actor: Actor, guideId: s
   }
   await executeAtomically(db, statements);
   return { id: reportId, guideId, status: 'RECIBIDO', resultCount: input.results.length };
+}
+
+async function guideForException(db: D1Database, guideId: string, targetStatus: 'REMUESTREO' | 'DIRIMENCIA') {
+  const guide = await db.prepare('SELECT id, status FROM guides WHERE id = ?').bind(guideId).first<{ id: string; status: string }>();
+  if (!guide) throw new HttpError(404, 'La guía no existe.', 'GUIDE_NOT_FOUND');
+  const allowed = targetStatus === 'REMUESTREO' ? ['LEYES_RECIBIDAS', 'PROPUESTA_PENDIENTE'] : ['LEYES_RECIBIDAS', 'PROPUESTA_PENDIENTE', 'REMUESTREO', 'CONFORME'];
+  if (!allowed.includes(guide.status)) throw new HttpError(409, 'La guía no permite esta excepción en su estado actual.', 'INVALID_QUALITY_EXCEPTION');
+  return guide;
+}
+
+export async function openResample(db: D1Database, actor: Actor, guideId: string, reason: string) {
+  const guide = await guideForException(db, guideId, 'REMUESTREO');
+  const now = new Date().toISOString(); const id = crypto.randomUUID();
+  await executeAtomically(db, [
+    db.prepare('INSERT INTO resamples (id, guide_id, reason, status, requested_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, guideId, reason, 'SOLICITADO', now, now, now),
+    db.prepare('UPDATE guides SET status = ?, updated_at = ? WHERE id = ?').bind('REMUESTREO', now, guideId),
+    prepareAuditLog({ db, actor, action: 'CREATED', entityType: 'resample', entityId: id, after: { guideId, reason, status: 'SOLICITADO' }, occurredAt: now }),
+    prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'guide', entityId: guideId, before: { status: guide.status }, after: { status: 'REMUESTREO' }, reason, occurredAt: now }),
+  ]);
+  return { id, status: 'SOLICITADO' };
+}
+
+export async function openDispute(db: D1Database, actor: Actor, guideId: string, reason: string) {
+  const guide = await guideForException(db, guideId, 'DIRIMENCIA');
+  const now = new Date().toISOString(); const id = crypto.randomUUID();
+  await executeAtomically(db, [
+    db.prepare('INSERT INTO disputes (id, guide_id, reason, stage, opened_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, guideId, reason, 'INICIADA', now, now, now),
+    db.prepare('UPDATE guides SET status = ?, updated_at = ? WHERE id = ?').bind('DIRIMENCIA', now, guideId),
+    prepareAuditLog({ db, actor, action: 'CREATED', entityType: 'dispute', entityId: id, after: { guideId, reason, stage: 'INICIADA' }, occurredAt: now }),
+    prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'guide', entityId: guideId, before: { status: guide.status }, after: { status: 'DIRIMENCIA' }, reason, occurredAt: now }),
+  ]);
+  return { id, stage: 'INICIADA' };
 }
