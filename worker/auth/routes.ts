@@ -52,24 +52,35 @@ authRoutes.post('/setup', async (context) => {
 
   const now = new Date().toISOString();
   const user = { id: crypto.randomUUID(), username: normalizedUsername(credentials.username), ...(await createPasswordRecord(credentials.password)) };
-  await context.env.DB.batch([
-    context.env.DB.prepare(
-      `INSERT INTO users (id, username, password_salt, password_hash, role, active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'ADMIN', 1, ?, ?)`,
-    ).bind(user.id, user.username, user.salt, user.hash, now, now),
-    prepareAuditLog({
-      db: context.env.DB,
-      actor: { username: user.username, source: 'system' },
-      action: 'CREATED',
-      entityType: 'user',
-      entityId: user.id,
-      after: { username: user.username, role: 'ADMIN' },
-      reason: 'Configuración inicial del sistema',
-      occurredAt: now,
-    }),
-  ]);
+  try {
+    await context.env.DB.batch([
+      context.env.DB.prepare(
+        `INSERT INTO users (id, username, password_salt, password_hash, role, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'ADMIN', 1, ?, ?)`,
+      ).bind(user.id, user.username, user.salt, user.hash, now, now),
+      prepareAuditLog({
+        db: context.env.DB,
+        actor: { username: user.username, source: 'system' },
+        action: 'CREATED',
+        entityType: 'user',
+        entityId: user.id,
+        after: { username: user.username, role: 'ADMIN' },
+        reason: 'Configuración inicial del sistema',
+        occurredAt: now,
+      }),
+    ]);
+  } catch (error) {
+    console.error('BOOTSTRAP_WRITE_FAILED', error);
+    throw new HttpError(503, 'No se pudo registrar la cuenta inicial.', 'BOOTSTRAP_WRITE_FAILED');
+  }
 
-  const session = await createSession(context.env.DB, user.id);
+  let session: Awaited<ReturnType<typeof createSession>>;
+  try {
+    session = await createSession(context.env.DB, user.id);
+  } catch (error) {
+    console.error('BOOTSTRAP_SESSION_FAILED', error);
+    throw new HttpError(503, 'La cuenta fue creada, pero no se pudo iniciar la sesión.', 'BOOTSTRAP_SESSION_FAILED');
+  }
   return context.json({ username: user.username, role: 'ADMIN', expiresAt: session.expiresAt }, 201, { 'set-cookie': sessionCookie(session.token, context.env.APP_ENV) });
 });
 
