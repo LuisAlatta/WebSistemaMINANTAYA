@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { HttpError } from './http/errors';
 import { requireActor, type AppVariables } from './http/middleware';
 import { guideRoutes } from './guides/routes';
+import { financeRoutes } from './finance/routes';
 
 const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -22,6 +23,7 @@ app.use('/api/*', requireActor);
 
 app.get('/api/health', (context) => context.json({ status: 'ok' }));
 app.route('/api/guides', guideRoutes);
+app.route('/api', financeRoutes);
 
 export default {
   fetch(request, env, context) {
