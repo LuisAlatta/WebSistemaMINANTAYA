@@ -28,7 +28,15 @@ pnpm db:migrate:local
 pnpm dev
 ```
 
-La aplicación queda disponible en `http://127.0.0.1:5173`. En desarrollo, las mutaciones usan el encabezado local `x-dev-actor`; en producción se resuelve la identidad con Cloudflare Access.
+La aplicación queda disponible en `http://127.0.0.1:5173`. Para usar el acceso local por primera vez, define `BOOTSTRAP_SECRET` en un archivo `.dev.vars` que no se versiona y usa la misma clave en la pantalla de creación inicial.
+
+## Usuarios y auditoría
+
+- El sistema usa nombres de usuario, no correos electrónicos.
+- Solo existen dos cuentas con rol administrador total.
+- Cada operación queda asociada al usuario de su sesión en la auditoría inmutable.
+- Las sesiones son `HttpOnly`, `SameSite=Strict`, expiran a las 12 horas y se invalidan al cerrar sesión.
+- El acceso inicial requiere una clave privada de activación (`BOOTSTRAP_SECRET`), configurada fuera del repositorio.
 
 ## Validación
 
@@ -50,4 +58,12 @@ No se deben editar manualmente las tablas o registros productivos. Las bajas, re
 
 ## Despliegue Cloudflare
 
-Antes del primer despliegue se debe autenticar Wrangler con la cuenta autorizada, crear D1 y R2, actualizar sus identificadores en `wrangler.jsonc`, aplicar migraciones remotas y activar Cloudflare Access. No se incluyen credenciales, documentos de empresa ni bases locales en el repositorio.
+Antes de crear la primera cuenta productiva, configura una clave de activación robusta que solo conozca el responsable:
+
+```powershell
+npx wrangler secret put BOOTSTRAP_SECRET
+```
+
+Cuando Wrangler la solicite, pega una clave aleatoria de al menos 24 caracteres. Después abre la aplicación, selecciona **Crear primera cuenta** y registra el primer usuario. La clave no se incluye en el repositorio ni debe compartirse por canales públicos.
+
+No se incluyen credenciales, documentos de empresa ni bases locales en el repositorio.
