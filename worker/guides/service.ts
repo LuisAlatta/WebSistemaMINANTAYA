@@ -302,3 +302,39 @@ export async function changeGuideStatus(
 
   return { id: guideId, status: input.status };
 }
+
+export async function listGuides(db: D1Database): Promise<{
+  items: Array<{
+    id: string;
+    gre: string;
+    greNormalized: string;
+    issuedAt: string;
+    status: GuideStatus;
+    lotCount: number;
+  }>;
+}> {
+  const result = await db
+    .prepare(
+      `SELECT
+        guides.id,
+        guides.gre_original AS gre,
+        guides.gre_normalized AS greNormalized,
+        guides.issued_at AS issuedAt,
+        guides.status,
+        COUNT(guide_lots.id) AS lotCount
+      FROM guides
+      LEFT JOIN guide_lots ON guide_lots.guide_id = guides.id
+      GROUP BY guides.id
+      ORDER BY guides.issued_at DESC, guides.created_at DESC`,
+    )
+    .all<{
+      id: string;
+      gre: string;
+      greNormalized: string;
+      issuedAt: string;
+      status: GuideStatus;
+      lotCount: number;
+    }>();
+
+  return { items: result.results };
+}

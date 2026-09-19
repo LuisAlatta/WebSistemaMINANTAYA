@@ -2,9 +2,17 @@ import { Hono } from 'hono';
 
 import type { AppVariables } from '../http/middleware';
 import { HttpError } from '../http/errors';
-import { changeGuideStatus, changeGuideStatusSchema, createGuide, createGuideSchema } from './service';
+import {
+  changeGuideStatus,
+  changeGuideStatusSchema,
+  createGuide,
+  createGuideSchema,
+  listGuides,
+} from './service';
 
 export const guideRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>();
+
+guideRoutes.get('/', async (context) => context.json(await listGuides(context.env.DB)));
 
 guideRoutes.post('/', async (context) => {
   const payload = await context.req.json().catch(() => {

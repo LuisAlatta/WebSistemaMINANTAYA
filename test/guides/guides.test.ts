@@ -107,4 +107,19 @@ describe('guides API', () => {
       .first();
     expect(event).toMatchObject({ event_type: 'ESTADO_CAMBIADO' });
   });
+
+  it('lists registered guides with their lot count', async () => {
+    const response = await worker.fetch(
+      new Request('https://app.test/api/guides'),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ gre: 'EG07 - 365', lotCount: 1 }),
+      ]),
+    });
+  });
 });
