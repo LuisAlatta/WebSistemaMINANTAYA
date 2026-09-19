@@ -1,0 +1,41 @@
+{
+  "name": "web-sistema-minantaya",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "dev": "vite --host 127.0.0.1",
+    "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:integration": "vitest run",
+    "test:e2e": "playwright test",
+    "db:migrate:local": "wrangler d1 migrations apply MINANTAYA_DB --local",
+    "cf-types": "wrangler types",
+    "deploy": "vite build && wrangler deploy"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "^0.7.3",
+    "hono": "^4.11.11",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "zod": "^4.5.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.20.1",
+    "@cloudflare/vitest-plugin": "^1.1.13",
+    "@playwright/test": "^1.58.2",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^25.4.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.4",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vitest": "^4.0.18",
+    "wrangler": "^4.72.0"
+  }
+}
