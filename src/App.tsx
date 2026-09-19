@@ -135,7 +135,8 @@ export function App() {
 
   async function createAdministrator(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setIsCreatingUser(true);
     setError(null);
     try {
@@ -146,7 +147,7 @@ export function App() {
       });
       const payload = await response.json() as { message?: string };
       if (!response.ok) throw new Error(payload.message ?? 'No se pudo crear el administrador.');
-      event.currentTarget.reset();
+      formElement.reset();
       await loadUsers();
     } catch (userError) {
       setError(userError instanceof Error ? userError.message : 'No se pudo crear el administrador.');
