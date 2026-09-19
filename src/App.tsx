@@ -15,7 +15,14 @@ type Dashboard = {
   missingTransportInvoice: number;
 };
 
-const navigation = ['Inicio', 'Guías', 'Leyes', 'Liquidaciones', 'Facturas', 'Auditoría'];
+type UserAccount = {
+  username: string;
+  role: string;
+  active: number;
+  createdAt: string;
+};
+
+const navigation = ['Inicio', 'Guías', 'Leyes', 'Liquidaciones', 'Facturas', 'Auditoría', 'Usuarios'];
 
 const statusClass: Record<string, string> = {
   EMITIDA: 'bg-[#e6f0c9] text-[#294238]',
@@ -30,6 +37,7 @@ export function App() {
   const [activeSection, setActiveSection] = useState('Inicio');
   const [guides, setGuides] = useState<Guide[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard>({ pendingLaws: 0, pendingProposal: 0, openAlerts: 0, missingTransportInvoice: 0 });
+  const [users, setUsers] = useState<UserAccount[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -38,6 +46,7 @@ export function App() {
   const [isAuthResolved, setIsAuthResolved] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'setup'>('login');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
 
   async function loadGuides() {
     setIsLoading(true);
@@ -64,6 +73,12 @@ export function App() {
     }
   }
 
+  async function loadUsers() {
+    const response = await fetch('/api/auth/users');
+    if (!response.ok) throw new Error('No se pudieron cargar los usuarios.');
+    setUsers((await response.json() as { items: UserAccount[] }).items);
+  }
+
   useEffect(() => {
     void (async () => {
       try {
@@ -71,7 +86,7 @@ export function App() {
         if (response.ok) {
           const payload = (await response.json()) as { username: string };
           setUsername(payload.username);
-          await Promise.all([loadGuides(), loadDashboard()]);
+          await Promise.all([loadGuides(), loadDashboard(), loadUsers()]);
         }
       } finally {
         setIsAuthResolved(true);
@@ -103,7 +118,7 @@ export function App() {
         throw new Error(payload.message ?? 'No se pudo iniciar sesión.');
       }
       setUsername(payload.username ?? null);
-      await Promise.all([loadGuides(), loadDashboard()]);
+      await Promise.all([loadGuides(), loadDashboard(), loadUsers()]);
     } catch (authError) {
       setError(authError instanceof Error ? authError.message : 'No se pudo iniciar sesión.');
     } finally {
@@ -116,6 +131,28 @@ export function App() {
     setUsername(null);
     setGuides([]);
     setDashboard({ pendingLaws: 0, pendingProposal: 0, openAlerts: 0, missingTransportInvoice: 0 });
+  }
+
+  async function createAdministrator(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setIsCreatingUser(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/auth/users', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: String(form.get('username') ?? ''), password: String(form.get('password') ?? '') }),
+      });
+      const payload = await response.json() as { message?: string };
+      if (!response.ok) throw new Error(payload.message ?? 'No se pudo crear el administrador.');
+      event.currentTarget.reset();
+      await loadUsers();
+    } catch (userError) {
+      setError(userError instanceof Error ? userError.message : 'No se pudo crear el administrador.');
+    } finally {
+      setIsCreatingUser(false);
+    }
   }
 
   async function registerGuide(event: FormEvent<HTMLFormElement>) {
@@ -188,6 +225,7 @@ export function App() {
         <section className="px-4 py-6 sm:px-8 lg:px-12 lg:py-10"><div className="mx-auto max-w-[1400px]">
           <header className="flex flex-col gap-5 border-b border-[#d9e2df] pb-7 md:flex-row md:items-end md:justify-between"><div><p className="text-sm font-medium text-[#54716f]">Vista operativa</p><h2 className="mt-1 text-3xl font-semibold tracking-tight">Control de operaciones</h2><p className="mt-2 max-w-[62ch] text-sm leading-6 text-[#607876]">Guías, lotes, calidad, liquidación, facturación y transporte en una sola trazabilidad.</p></div><button className="rounded-lg bg-[#2e6b61] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#24584f]" onClick={() => setIsFormOpen(true)} type="button">Registrar guía</button></header>
           {error && <p className="mt-6 rounded-lg border border-[#c97965] bg-[#fff3f0] px-4 py-3 text-sm text-[#7f301f]" role="alert">{error}</p>}
+          {activeSection === 'Usuarios' && <section aria-labelledby="administradores" className="mt-8 grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]"><div className="border border-[#d9e2df] bg-white"><div className="border-b border-[#d9e2df] px-5 py-4"><p className="text-xs font-semibold tracking-[0.16em] text-[#54716f]">SEGURIDAD</p><h3 className="mt-1 text-xl font-semibold" id="administradores">Administradores</h3><p className="mt-1 text-sm text-[#607876]">Dos cuentas como máximo. Todas tienen acceso total y quedan auditadas.</p></div><div className="divide-y divide-[#e6ece9]">{users.map((account) => <div className="flex items-center justify-between gap-4 px-5 py-4" key={account.username}><div><p className="font-semibold text-[#18343a]">{account.username}</p><p className="mt-1 text-xs text-[#607876]">{account.role} · Creado {new Intl.DateTimeFormat('es-PE', { dateStyle: 'medium' }).format(new Date(account.createdAt))}</p></div><span className="rounded-full bg-[#d8ead5] px-2.5 py-1 text-xs font-semibold text-[#295b2c]">Activo</span></div>)}</div></div><form className="border border-[#cfdcd7] bg-white p-5 shadow-sm" onSubmit={createAdministrator}><p className="text-xs font-semibold tracking-[0.16em] text-[#54716f]">NUEVA CUENTA</p><h3 className="mt-1 text-lg font-semibold">Crear administrador</h3><p className="mt-1 text-sm leading-5 text-[#607876]">{users.length >= 2 ? 'Ya se alcanzó el máximo de dos administradores.' : 'La contraseña debe tener al menos 12 caracteres.'}</p><fieldset className="mt-5 grid gap-4" disabled={isCreatingUser || users.length >= 2}><label className="grid gap-1.5 text-sm font-medium">Usuario<input autoComplete="username" className="rounded-md border border-[#b9cbc4] bg-white px-3 py-2" name="username" minLength={3} pattern="[A-Za-z0-9._-]+" required /></label><label className="grid gap-1.5 text-sm font-medium">Contraseña<input autoComplete="new-password" className="rounded-md border border-[#b9cbc4] bg-white px-3 py-2" name="password" minLength={12} required type="password" /></label><button className="rounded-md bg-[#2e6b61] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60" type="submit">{isCreatingUser ? 'Creando…' : 'Crear administrador'}</button></fieldset></form></section>}
           <section aria-label="Indicadores de operación" className="mt-7 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {[
               ['Leyes pendientes', dashboard.pendingLaws, 'Reportes por recibir'],

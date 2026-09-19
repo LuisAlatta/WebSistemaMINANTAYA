@@ -109,6 +109,14 @@ authRoutes.get('/me', async (context) => {
   return context.json({ username: actor.username, role: 'ADMIN' });
 });
 
+authRoutes.get('/users', async (context) => {
+  const result = await context.env.DB.prepare(
+    `SELECT username, role, active, created_at AS createdAt
+     FROM users ORDER BY created_at ASC`,
+  ).all();
+  return context.json({ items: result.results });
+});
+
 authRoutes.post('/logout', async (context) => {
   const token = getSessionToken(context.req.raw);
   if (token) {

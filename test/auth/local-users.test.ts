@@ -43,6 +43,9 @@ describe('internal user accounts', () => {
     }), env, createExecutionContext());
     expect(secondAdmin.status).toBe(201);
 
+    const users = await worker.fetch(new Request('https://app.test/api/auth/users', { headers: { cookie } }), env, createExecutionContext());
+    await expect(users.json()).resolves.toMatchObject({ items: [expect.objectContaining({ username: 'operador1' }), expect.objectContaining({ username: 'operador2' })] });
+
     const thirdAdmin = await worker.fetch(new Request('https://app.test/api/auth/users', {
       method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ username: 'operador3', password: 'TerceraClaveSegura123!' }),
     }), env, createExecutionContext());
