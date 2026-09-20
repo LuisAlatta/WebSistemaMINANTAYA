@@ -13,4 +13,16 @@ describe('commercial invoices API', () => {
     expect(response.status).toBe(201);
     expect(await env.DB.prepare('SELECT invoice_number, amount_usd_cents FROM commercial_invoices').first()).toMatchObject({ invoice_number: 'F001-0001', amount_usd_cents: 125000 });
   });
+
+  it('does not cancel an invoice with confirmed payments and preserves its state', async () => {
+    await env.DB.prepare("INSERT INTO commercial_invoices (id, invoice_number, issued_at, amount_usd_cents, detraction_percent, detraction_pen_cents, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'EMITIDA', ?, ?)").bind('invoice-cancel', 'F001-0002', '2026-09-18T00:00:00.000Z', 100000, 0.1, 0, '2026-09-18T00:00:00.000Z', '2026-09-18T00:00:00.000Z').run();
+    const cancelled = await worker.fetch(new Request('https://app.test/api/commercial-invoices/invoice-cancel/cancel', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ reason: 'Documento emitido por error.' }) }), env, createExecutionContext());
+    expect(cancelled.status).toBe(200);
+
+    await env.DB.prepare("INSERT INTO commercial_invoices (id, invoice_number, issued_at, amount_usd_cents, detraction_percent, detraction_pen_cents, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'EMITIDA', ?, ?)").bind('invoice-paid', 'F001-0003', '2026-09-18T00:00:00.000Z', 100000, 0.1, 0, '2026-09-18T00:00:00.000Z', '2026-09-18T00:00:00.000Z').run();
+    await env.DB.prepare("INSERT INTO payments (id, payment_type, commercial_invoice_id, paid_at, currency, amount_cents, status, created_at, updated_at) VALUES (?, 'COMERCIAL', ?, ?, 'USD', ?, 'CONFIRMADO', ?, ?)").bind('paid-payment', 'invoice-paid', '2026-09-18T00:00:00.000Z', 100000, '2026-09-18T00:00:00.000Z', '2026-09-18T00:00:00.000Z').run();
+    const blocked = await worker.fetch(new Request('https://app.test/api/commercial-invoices/invoice-paid/cancel', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ reason: 'No corresponde anular pago confirmado.' }) }), env, createExecutionContext());
+    expect(blocked.status).toBe(409);
+    await expect(env.DB.prepare('SELECT status FROM commercial_invoices WHERE id = ?').bind('invoice-paid').first()).resolves.toMatchObject({ status: 'EMITIDA' });
+  });
 });

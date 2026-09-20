@@ -42,6 +42,7 @@ const paymentSchema = z.object({
 });
 
 const exchangeRateSchema = z.object({ rateDate: z.iso.date(), usdToPen: z.number().positive().max(20) });
+const cancellationSchema = z.object({ reason: z.string().trim().min(3).max(1_000) });
 
 export const financeRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
@@ -127,4 +128,64 @@ financeRoutes.post('/exchange-rates', async (context) => {
     prepareAuditLog({ db, actor, action: previous ? 'UPDATED' : 'CREATED', entityType: 'exchange_rate', entityId: id, before: previous ? { usdToPen: previous.usd_to_pen } : undefined, after, occurredAt: now }),
   ]);
   return context.json(after, previous ? 200 : 201);
+});
+
+async function cancelInvoice(
+  db: D1Database,
+  actor: AppVariables['actor'],
+  kind: 'commercial' | 'transport',
+  id: string,
+  reason: string,
+) {
+  const table = kind === 'commercial' ? 'commercial_invoices' : 'transport_invoices';
+  const paymentColumn = kind === 'commercial' ? 'commercial_invoice_id' : 'transport_invoice_id';
+  const entityType = kind === 'commercial' ? 'commercial_invoice' : 'transport_invoice';
+  const invoice = await db.prepare(`SELECT id, status FROM ${table} WHERE id = ?`).bind(id).first<{ id: string; status: string }>();
+  if (!invoice) throw new HttpError(404, 'La factura no existe.', 'INVOICE_NOT_FOUND');
+  if (invoice.status === 'ANULADA') throw new HttpError(409, 'La factura ya está anulada.', 'INVOICE_ALREADY_CANCELLED');
+  const payments = await db.prepare("SELECT COUNT(*) AS total FROM payments WHERE " + paymentColumn + " = ? AND status = 'CONFIRMADO'").bind(id).first<{ total: number }>();
+  if ((payments?.total ?? 0) > 0) throw new HttpError(409, 'Primero debe anular los pagos confirmados de esta factura.', 'INVOICE_HAS_CONFIRMED_PAYMENTS');
+  const now = new Date().toISOString(); const before = { id, status: invoice.status }; const after = { id, status: 'ANULADA', reason };
+  await executeAtomically(db, [
+    db.prepare(`UPDATE ${table} SET status = 'ANULADA', void_reason = ?, updated_at = ? WHERE id = ?`).bind(reason, now, id),
+    prepareAuditLog({ db, actor, action: 'CANCELLED', entityType, entityId: id, before, after, reason, occurredAt: now }),
+  ]);
+  return after;
+}
+
+financeRoutes.post('/commercial-invoices/:id/cancel', async (context) => {
+  const parsed = cancellationSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  return context.json(await cancelInvoice(context.env.DB, context.get('actor'), 'commercial', context.req.param('id'), parsed.data.reason));
+});
+
+financeRoutes.post('/transport-invoices/:id/cancel', async (context) => {
+  const parsed = cancellationSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  return context.json(await cancelInvoice(context.env.DB, context.get('actor'), 'transport', context.req.param('id'), parsed.data.reason));
+});
+
+financeRoutes.post('/payments/:id/cancel', async (context) => {
+  const parsed = cancellationSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  const db = context.env.DB; const payment = await db.prepare('SELECT id, payment_type, commercial_invoice_id AS commercialInvoiceId, transport_invoice_id AS transportInvoiceId, status FROM payments WHERE id = ?').bind(context.req.param('id')).first<{ id: string; payment_type: string; commercialInvoiceId: string | null; transportInvoiceId: string | null; status: string }>();
+  if (!payment) throw new HttpError(404, 'El pago no existe.', 'PAYMENT_NOT_FOUND');
+  if (payment.status === 'ANULADO') throw new HttpError(409, 'El pago ya está anulado.', 'PAYMENT_ALREADY_CANCELLED');
+  const now = new Date().toISOString(); const before = { id: payment.id, status: payment.status }; const after = { id: payment.id, status: 'ANULADO', reason: parsed.data.reason };
+  const isTransport = Boolean(payment.transportInvoiceId); const invoiceId = payment.transportInvoiceId ?? payment.commercialInvoiceId;
+  const table = isTransport ? 'transport_invoices' : 'commercial_invoices'; const paymentColumn = isTransport ? 'transport_invoice_id' : 'commercial_invoice_id';
+  const statements: D1PreparedStatement[] = [
+    db.prepare("UPDATE payments SET status = 'ANULADO', updated_at = ? WHERE id = ?").bind(now, payment.id),
+    prepareAuditLog({ db, actor: context.get('actor'), action: 'CANCELLED', entityType: 'payment', entityId: payment.id, before, after, reason: parsed.data.reason, occurredAt: now }),
+  ];
+  if (invoiceId) {
+    const invoice = await db.prepare(`SELECT amount_usd_cents AS amountUsdCents, status FROM ${table} WHERE id = ?`).bind(invoiceId).first<{ amountUsdCents: number; status: string }>();
+    const paid = await db.prepare(`SELECT COALESCE(SUM(amount_cents), 0) AS total FROM payments WHERE ${paymentColumn} = ? AND payment_type IN ('COMERCIAL', 'TRANSPORTE') AND currency = 'USD' AND status = 'CONFIRMADO'`).bind(invoiceId).first<{ total: number }>();
+    if (invoice?.status === 'PAGADA' && (paid?.total ?? 0) < invoice.amountUsdCents) statements.push(
+      db.prepare(`UPDATE ${table} SET status = 'EMITIDA', updated_at = ? WHERE id = ?`).bind(now, invoiceId),
+      prepareAuditLog({ db, actor: context.get('actor'), action: 'STATUS_CHANGED', entityType: isTransport ? 'transport_invoice' : 'commercial_invoice', entityId: invoiceId, before: { status: 'PAGADA' }, after: { status: 'EMITIDA' }, occurredAt: now }),
+    );
+  }
+  await executeAtomically(db, statements);
+  return context.json(after);
 });
