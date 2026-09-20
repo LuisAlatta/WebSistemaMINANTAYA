@@ -6,5 +6,6 @@
 node_modules/
 dist/
 coverage/
+tmp/
 .Codex/
 Recursos/
