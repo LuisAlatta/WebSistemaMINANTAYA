@@ -727,7 +727,9 @@ def render_import_sql(plan: ImportPlan, manifest: list[dict[str, Any]]) -> str:
         "test_data_quality_issues": 18,
     }
     ordered = [statement for _, (_, statement) in sorted(enumerate(plan.statements), key=lambda item: (table_order[item[1][0]], item[0]))]
-    return "\n".join(["PRAGMA foreign_keys = ON;", "BEGIN IMMEDIATE;", insert("test_data_import_batches", batch), *ordered, insert("audit_logs", audit), "COMMIT;", ""])
+    # D1 ejecuta los archivos remotos como importaciones atómicas y no admite
+    # BEGIN/COMMIT dentro del archivo.
+    return "\n".join(["PRAGMA foreign_keys = ON;", insert("test_data_import_batches", batch), *ordered, insert("audit_logs", audit), ""])
 
 
 def render_cleanup_sql(batch_id: str, now: str) -> str:
@@ -775,7 +777,7 @@ def render_cleanup_sql(batch_id: str, now: str) -> str:
         f"DELETE FROM test_data_source_rows WHERE batch_id = {sql(batch_id)};",
         f"DELETE FROM test_data_import_batches WHERE id = {sql(batch_id)};",
     ]
-    return "\n".join(["PRAGMA foreign_keys = ON;", "BEGIN IMMEDIATE;", audit, *deletes, "COMMIT;", ""])
+    return "\n".join(["PRAGMA foreign_keys = ON;", audit, *deletes, ""])
 
 
 def main() -> None:

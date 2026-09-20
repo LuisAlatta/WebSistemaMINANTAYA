@@ -7,5 +7,6 @@ node_modules/
 dist/
 coverage/
 tmp/
+__pycache__/
 .Codex/
 Recursos/
