@@ -11,6 +11,14 @@ const settlementSchema = z.object({
   purchaseProposalId: z.string().min(1).optional(), grossUsdCents: z.int().nonnegative(), deductionsUsdCents: z.int().nonnegative(), netUsdCents: z.int().nonnegative(),
   lines: z.array(z.object({ lineType: z.enum(['METAL', 'DESCUENTO', 'PENALIDAD', 'AJUSTE', 'OTRO']), description: z.string().trim().min(1).max(300), amountUsdCents: z.int() })).min(1),
 }).superRefine((value, context) => { if (value.netUsdCents !== value.grossUsdCents - value.deductionsUsdCents) context.addIssue({ code: 'custom', path: ['netUsdCents'], message: 'El neto debe ser igual al bruto menos descuentos.' }); });
+const reasonSchema = z.object({ reason: z.string().trim().min(3).max(1_000) });
+const discountSchema = z.object({
+  settlementId: z.string().min(1).optional(),
+  lotId: z.string().min(1).optional(),
+  discountType: z.enum(['TRANSPORTE', 'MAQUILA', 'HUMEDAD', 'IMPUREZA', 'PENALIDAD', 'OTRO']),
+  amountUsdCents: z.int().nonnegative(),
+  reason: z.string().trim().min(3).max(1_000),
+});
 
 export const settlementGuideRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 export const settlementRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>();
@@ -63,4 +71,41 @@ settlementRoutes.post('/:id/approve', async (context) => {
     prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'guide', entityId: proposal.guide_id, before: { status: 'PROPUESTA_PENDIENTE' }, after: { status: 'CONFORME' }, occurredAt: now }),
   ]);
   return context.json({ id: proposal.id, status: 'APROBADA' });
+});
+
+settlementRoutes.post('/:id/reject', async (context) => {
+  const parsed = reasonSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  const db = context.env.DB; const proposal = await db.prepare('SELECT id, guide_id, status FROM purchase_proposals WHERE id = ?').bind(context.req.param('id')).first<{ id: string; guide_id: string; status: string }>();
+  if (!proposal) throw new HttpError(404, 'La propuesta no existe.', 'PROPOSAL_NOT_FOUND');
+  if (proposal.status !== 'ENVIADA') throw new HttpError(409, 'La propuesta no puede rechazarse en su estado actual.', 'PROPOSAL_NOT_REJECTABLE');
+  const now = new Date().toISOString(); const actor = context.get('actor'); const after = { id: proposal.id, status: 'RECHAZADA', reason: parsed.data.reason };
+  await executeAtomically(db, [
+    db.prepare("UPDATE purchase_proposals SET status = 'RECHAZADA', updated_at = ? WHERE id = ?").bind(now, proposal.id),
+    db.prepare("INSERT INTO guide_events (id, guide_id, event_type, occurred_at, detail_json, created_at) VALUES (?, ?, 'OBSERVACION', ?, ?, ?)").bind(crypto.randomUUID(), proposal.guide_id, now, JSON.stringify({ proposalId: proposal.id, ...after }), now),
+    prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'purchase_proposal', entityId: proposal.id, before: { id: proposal.id, status: proposal.status }, after, reason: parsed.data.reason, occurredAt: now }),
+  ]);
+  return context.json(after);
+});
+
+settlementGuideRoutes.post('/:guideId/discounts', async (context) => {
+  const parsed = discountSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  const input = parsed.data; const db = context.env.DB; const guideId = context.req.param('guideId');
+  const guide = await db.prepare('SELECT id FROM guides WHERE id = ?').bind(guideId).first<{ id: string }>();
+  if (!guide) throw new HttpError(404, 'La guía no existe.', 'GUIDE_NOT_FOUND');
+  if (input.lotId) {
+    const lot = await db.prepare('SELECT id FROM guide_lots WHERE guide_id = ? AND lot_id = ?').bind(guideId, input.lotId).first();
+    if (!lot) throw new HttpError(400, 'El lote no pertenece a esta guía.', 'INVALID_DISCOUNT_LOT');
+  }
+  if (input.settlementId) {
+    const settlement = await db.prepare('SELECT id FROM settlements WHERE id = ? AND guide_id = ?').bind(input.settlementId, guideId).first();
+    if (!settlement) throw new HttpError(400, 'La liquidación no corresponde a esta guía.', 'INVALID_DISCOUNT_SETTLEMENT');
+  }
+  const id = crypto.randomUUID(); const now = new Date().toISOString(); const after = { id, guideId, ...input };
+  await executeAtomically(db, [
+    db.prepare('INSERT INTO discounts (id, settlement_id, guide_id, lot_id, discount_type, amount_usd_cents, reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, input.settlementId ?? null, guideId, input.lotId ?? null, input.discountType, input.amountUsdCents, input.reason, now, now),
+    prepareAuditLog({ db, actor: context.get('actor'), action: 'CREATED', entityType: 'discount', entityId: id, after, reason: input.reason, occurredAt: now }),
+  ]);
+  return context.json(after, 201);
 });
