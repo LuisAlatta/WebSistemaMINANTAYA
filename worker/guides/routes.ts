@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { AppVariables } from '../http/middleware';
 import { HttpError } from '../http/errors';
-import { assayReportSchema, openDispute, openResample, qualityExceptionSchema, recordAssayReport } from '../quality/service';
+import { assayReportSchema, disputeProgressSchema, openDispute, openResample, progressDispute, progressResample, qualityExceptionSchema, recordAssayReport, resampleProgressSchema } from '../quality/service';
 import {
   changeGuideStatus,
   changeGuideStatusSchema,
@@ -94,4 +94,16 @@ guideRoutes.post('/:id/disputes', async (context) => {
   const parsed = qualityExceptionSchema.safeParse(await context.req.json());
   if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
   return context.json(await openDispute(context.env.DB, context.get('actor'), context.req.param('id'), parsed.data.reason), 201);
+});
+
+guideRoutes.patch('/:id/resamples/:resampleId', async (context) => {
+  const parsed = resampleProgressSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  return context.json(await progressResample(context.env.DB, context.get('actor'), context.req.param('id'), context.req.param('resampleId'), parsed.data.status));
+});
+
+guideRoutes.patch('/:id/disputes/:disputeId', async (context) => {
+  const parsed = disputeProgressSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  return context.json(await progressDispute(context.env.DB, context.get('actor'), context.req.param('id'), context.req.param('disputeId'), parsed.data));
 });

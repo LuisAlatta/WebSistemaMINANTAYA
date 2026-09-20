@@ -12,6 +12,20 @@ export const assayReportSchema = z.object({
 });
 
 export const qualityExceptionSchema = z.object({ reason: z.string().trim().min(3).max(1_000) });
+export const resampleProgressSchema = z.object({ status: z.enum(['COORDINADO', 'ENVIADO_LABORATORIO', 'RESULTADO_RECIBIDO', 'CERRADO']) });
+export const disputeProgressSchema = z.object({
+  stage: z.enum(['MUESTRAS_ENVIADAS', 'ANALISIS_LIMA', 'RESULTADO_RECIBIDO', 'CERRADA']),
+  resolution: z.string().trim().min(3).max(1_000).optional(),
+}).superRefine((value, context) => {
+  if (value.stage === 'CERRADA' && !value.resolution) context.addIssue({ code: 'custom', path: ['resolution'], message: 'La resolución es obligatoria al cerrar la dirimencia.' });
+});
+
+const resampleTransitions: Record<string, readonly string[]> = {
+  SOLICITADO: ['COORDINADO'], COORDINADO: ['ENVIADO_LABORATORIO'], ENVIADO_LABORATORIO: ['RESULTADO_RECIBIDO'], RESULTADO_RECIBIDO: ['CERRADO'], CERRADO: [],
+};
+const disputeTransitions: Record<string, readonly string[]> = {
+  INICIADA: ['MUESTRAS_ENVIADAS'], MUESTRAS_ENVIADAS: ['ANALISIS_LIMA'], ANALISIS_LIMA: ['RESULTADO_RECIBIDO'], RESULTADO_RECIBIDO: ['CERRADA'], CERRADA: [],
+};
 
 export async function recordAssayReport(db: D1Database, actor: Actor, guideId: string, input: z.infer<typeof assayReportSchema>) {
   const guide = await db.prepare('SELECT id, status FROM guides WHERE id = ?').bind(guideId).first<{ id: string; status: string }>();
@@ -68,4 +82,58 @@ export async function openDispute(db: D1Database, actor: Actor, guideId: string,
     prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'guide', entityId: guideId, before: { status: guide.status }, after: { status: 'DIRIMENCIA' }, reason, occurredAt: now }),
   ]);
   return { id, stage: 'INICIADA' };
+}
+
+export async function progressResample(
+  db: D1Database,
+  actor: Actor,
+  guideId: string,
+  resampleId: string,
+  status: z.infer<typeof resampleProgressSchema>['status'],
+) {
+  const row = await db.prepare('SELECT id, status FROM resamples WHERE id = ? AND guide_id = ?').bind(resampleId, guideId).first<{ id: string; status: string }>();
+  if (!row) throw new HttpError(404, 'El remuestreo no pertenece a la guía.', 'RESAMPLE_NOT_FOUND');
+  if (!resampleTransitions[row.status]?.includes(status)) throw new HttpError(409, 'La etapa del remuestreo no es válida.', 'INVALID_RESAMPLE_TRANSITION');
+  const now = new Date().toISOString();
+  const before = { id: row.id, status: row.status };
+  const after = { id: row.id, status };
+  const statements: D1PreparedStatement[] = [
+    db.prepare('UPDATE resamples SET status = ?, resolved_at = ?, updated_at = ? WHERE id = ?').bind(status, status === 'CERRADO' ? now : null, now, row.id),
+    prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'resample', entityId: row.id, before, after, occurredAt: now }),
+  ];
+  if (status === 'CERRADO') {
+    statements.push(
+      db.prepare("UPDATE guides SET status = 'LEYES_RECIBIDAS', updated_at = ? WHERE id = ?").bind(now, guideId),
+      prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'guide', entityId: guideId, before: { status: 'REMUESTREO' }, after: { status: 'LEYES_RECIBIDAS' }, occurredAt: now }),
+    );
+  }
+  await executeAtomically(db, statements);
+  return after;
+}
+
+export async function progressDispute(
+  db: D1Database,
+  actor: Actor,
+  guideId: string,
+  disputeId: string,
+  input: z.infer<typeof disputeProgressSchema>,
+) {
+  const row = await db.prepare('SELECT id, stage FROM disputes WHERE id = ? AND guide_id = ?').bind(disputeId, guideId).first<{ id: string; stage: string }>();
+  if (!row) throw new HttpError(404, 'La dirimencia no pertenece a la guía.', 'DISPUTE_NOT_FOUND');
+  if (!disputeTransitions[row.stage]?.includes(input.stage)) throw new HttpError(409, 'La etapa de dirimencia no es válida.', 'INVALID_DISPUTE_TRANSITION');
+  const now = new Date().toISOString();
+  const before = { id: row.id, stage: row.stage };
+  const after = { id: row.id, stage: input.stage, resolution: input.resolution ?? null };
+  const statements: D1PreparedStatement[] = [
+    db.prepare('UPDATE disputes SET stage = ?, closed_at = ?, resolution = ?, updated_at = ? WHERE id = ?').bind(input.stage, input.stage === 'CERRADA' ? now : null, input.resolution ?? null, now, row.id),
+    prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'dispute', entityId: row.id, before, after, occurredAt: now }),
+  ];
+  if (input.stage === 'CERRADA') {
+    statements.push(
+      db.prepare("UPDATE guides SET status = 'LEYES_RECIBIDAS', updated_at = ? WHERE id = ?").bind(now, guideId),
+      prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'guide', entityId: guideId, before: { status: 'DIRIMENCIA' }, after: { status: 'LEYES_RECIBIDAS' }, reason: input.resolution, occurredAt: now }),
+    );
+  }
+  await executeAtomically(db, statements);
+  return after;
 }

@@ -18,4 +18,24 @@ describe('quality exceptions API', () => {
     expect(dispute.status).toBe(201);
     expect(await env.DB.prepare('SELECT stage FROM disputes WHERE guide_id = ?').bind('quality-exception').first()).toMatchObject({ stage: 'INICIADA' });
   });
+
+  it('advances a resample and closes a five-step dispute with traceability', async () => {
+    await env.DB.prepare("INSERT INTO guides (id, gre_original, gre_normalized, issued_at, status) VALUES (?, ?, ?, ?, 'LEYES_RECIBIDAS')").bind('quality-progress', 'QA-EX-002', 'QA-EX-002', '2026-09-18T00:00:00.000Z').run();
+    const created = await worker.fetch(new Request('https://app.test/api/guides/quality-progress/resamples', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ reason: 'Se requiere una segunda lectura.' }) }), env, createExecutionContext());
+    const resample = (await created.json()) as { id: string };
+    for (const status of ['COORDINADO', 'ENVIADO_LABORATORIO']) {
+      const progressed = await worker.fetch(new Request(`https://app.test/api/guides/quality-progress/resamples/${resample.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ status }) }), env, createExecutionContext());
+      expect(progressed.status).toBe(200);
+    }
+
+    const disputeCreated = await worker.fetch(new Request('https://app.test/api/guides/quality-progress/disputes', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ reason: 'Se debe dirimir el resultado con planta.' }) }), env, createExecutionContext());
+    const dispute = (await disputeCreated.json()) as { id: string };
+    for (const stage of ['MUESTRAS_ENVIADAS', 'ANALISIS_LIMA', 'RESULTADO_RECIBIDO']) {
+      const updated = await worker.fetch(new Request(`https://app.test/api/guides/quality-progress/disputes/${dispute.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ stage }) }), env, createExecutionContext());
+      expect(updated.status).toBe(200);
+    }
+    const closed = await worker.fetch(new Request(`https://app.test/api/guides/quality-progress/disputes/${dispute.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ stage: 'CERRADA', resolution: 'La planta aceptó la dirimencia.' }) }), env, createExecutionContext());
+    expect(closed.status).toBe(200);
+    await expect(env.DB.prepare('SELECT stage, closed_at FROM disputes WHERE id = ?').bind(dispute.id).first()).resolves.toMatchObject({ stage: 'CERRADA' });
+  });
 });
