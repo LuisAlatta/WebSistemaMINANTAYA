@@ -1,5 +1,15 @@
 CREATE UNIQUE INDEX idx_commercial_invoice_lots_lot_unique ON commercial_invoice_lots(lot_id);
-CREATE UNIQUE INDEX idx_transport_invoice_guides_guide_unique ON transport_invoice_guides(guide_id);
+CREATE TRIGGER prevent_transport_invoice_duplicate
+BEFORE INSERT ON transport_invoice_guides
+WHEN EXISTS (
+  SELECT 1
+  FROM transport_invoice_guides links
+  JOIN transport_invoices invoices ON invoices.id = links.transport_invoice_id
+  WHERE links.guide_id = NEW.guide_id AND invoices.status <> 'ANULADA'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'GUIDE_ALREADY_HAS_TRANSPORT_INVOICE');
+END;
 
 CREATE TRIGGER prevent_commercial_payment_overrun
 BEFORE INSERT ON payments
