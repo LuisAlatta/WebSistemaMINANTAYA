@@ -12,6 +12,7 @@ export const assayReportSchema = z.object({
   results: z.array(z.object({ lotId: z.string().uuid(), element: z.string().trim().min(1).max(20), resultValue: z.number().finite(), unit: z.string().trim().min(1).max(20) })).min(1),
 });
 export const assayReportProgressSchema = z.object({ status: z.enum(['ENVIADO_PROVEEDOR', 'APROBADO', 'OBSERVADO']) });
+export const supplierApprovalSchema = z.object({ supplierId: z.string().uuid(), status: z.enum(['APROBADO', 'OBSERVADO']) });
 
 export const qualityExceptionSchema = z.object({ reason: z.string().trim().min(3).max(1_000) });
 export const resampleProgressSchema = z.object({ status: z.enum(['COORDINADO', 'ENVIADO_LABORATORIO', 'RESULTADO_RECIBIDO', 'CERRADO']) });
@@ -54,6 +55,14 @@ export async function recordAssayReport(db: D1Database, actor: Actor, guideId: s
     const resultId = crypto.randomUUID();
     statements.push(db.prepare('INSERT INTO assay_results (id, assay_report_id, lot_id, element, result_value, unit, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(resultId, reportId, result.lotId, result.element.toUpperCase(), result.resultValue, result.unit, now), prepareAuditLog({ db, actor, action: 'CREATED', entityType: 'assay_result', entityId: resultId, after: result, occurredAt: now }));
   }
+  const suppliers = await db.prepare('SELECT DISTINCT lot_suppliers.supplier_id AS supplierId FROM guide_lots JOIN lot_suppliers ON lot_suppliers.guide_lot_id = guide_lots.id WHERE guide_lots.guide_id = ?').bind(guideId).all<{ supplierId: string }>();
+  for (const supplier of suppliers.results) {
+    const approvalId = crypto.randomUUID();
+    statements.push(
+      db.prepare("INSERT INTO assay_report_supplier_approvals (id, assay_report_id, supplier_id, status, created_at, updated_at) VALUES (?, ?, ?, 'PENDIENTE', ?, ?)").bind(approvalId, reportId, supplier.supplierId, now, now),
+      prepareAuditLog({ db, actor, action: 'CREATED', entityType: 'assay_report_supplier_approval', entityId: approvalId, after: { reportId, supplierId: supplier.supplierId, status: 'PENDIENTE' }, occurredAt: now }),
+    );
+  }
   await executeAtomically(db, statements);
   return { id: reportId, guideId, status: 'RECIBIDO', resultCount: input.results.length };
 }
@@ -65,10 +74,15 @@ export async function progressAssayReport(
   reportId: string,
   status: z.infer<typeof assayReportProgressSchema>['status'],
 ) {
-  const report = await db.prepare('SELECT id, status FROM assay_reports WHERE id = ? AND guide_id = ?').bind(reportId, guideId).first<{ id: string; status: string }>();
+  const report = await db.prepare('SELECT assay_reports.id, assay_reports.status, guides.status AS guideStatus FROM assay_reports JOIN guides ON guides.id = assay_reports.guide_id WHERE assay_reports.id = ? AND assay_reports.guide_id = ?').bind(reportId, guideId).first<{ id: string; status: string; guideStatus: string }>();
   if (!report) throw new HttpError(404, 'El reporte no pertenece a la guía.', 'ASSAY_REPORT_NOT_FOUND');
   const transitions: Record<string, readonly string[]> = { RECIBIDO: ['ENVIADO_PROVEEDOR'], ENVIADO_PROVEEDOR: ['APROBADO', 'OBSERVADO'], APROBADO: [], OBSERVADO: [] };
   if (!transitions[report.status]?.includes(status)) throw new HttpError(409, 'La etapa del reporte de leyes no es válida.', 'INVALID_ASSAY_REPORT_TRANSITION');
+  if (status === 'APROBADO') {
+    if (report.guideStatus !== 'LEYES_RECIBIDAS') throw new HttpError(409, 'La guía ya tiene una excepción de calidad abierta y no puede habilitar propuesta.', 'GUIDE_NOT_READY_FOR_PROPOSAL');
+    const pending = await db.prepare("SELECT COUNT(*) AS total FROM assay_report_supplier_approvals WHERE assay_report_id = ? AND status <> 'APROBADO'").bind(report.id).first<{ total: number }>();
+    if ((pending?.total ?? 0) > 0) throw new HttpError(409, 'Falta la conformidad de uno o más proveedores.', 'SUPPLIER_APPROVAL_PENDING');
+  }
   const now = new Date().toISOString(); const before = { id: report.id, status: report.status }; const after = { id: report.id, status };
   const statements: D1PreparedStatement[] = [
     db.prepare('UPDATE assay_reports SET status = ?, updated_at = ? WHERE id = ?').bind(status, now, report.id),
@@ -82,6 +96,24 @@ export async function progressAssayReport(
     );
   }
   await executeAtomically(db, statements);
+  return after;
+}
+
+export async function respondSupplierApproval(
+  db: D1Database,
+  actor: Actor,
+  guideId: string,
+  reportId: string,
+  input: z.infer<typeof supplierApprovalSchema>,
+) {
+  const approval = await db.prepare('SELECT approvals.id, approvals.status FROM assay_report_supplier_approvals approvals JOIN assay_reports reports ON reports.id = approvals.assay_report_id WHERE approvals.assay_report_id = ? AND approvals.supplier_id = ? AND reports.guide_id = ?').bind(reportId, input.supplierId, guideId).first<{ id: string; status: string }>();
+  if (!approval) throw new HttpError(404, 'El proveedor no está vinculado a este reporte.', 'SUPPLIER_APPROVAL_NOT_FOUND');
+  if (approval.status !== 'PENDIENTE') throw new HttpError(409, 'La conformidad del proveedor ya fue registrada.', 'SUPPLIER_APPROVAL_ALREADY_RESPONDED');
+  const now = new Date().toISOString(); const before = { id: approval.id, status: approval.status }; const after = { id: approval.id, supplierId: input.supplierId, status: input.status };
+  await executeAtomically(db, [
+    db.prepare('UPDATE assay_report_supplier_approvals SET status = ?, responded_at = ?, updated_at = ? WHERE id = ?').bind(input.status, now, now, approval.id),
+    prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'assay_report_supplier_approval', entityId: approval.id, before, after, occurredAt: now }),
+  ]);
   return after;
 }
 

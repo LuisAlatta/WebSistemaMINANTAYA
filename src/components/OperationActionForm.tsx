@@ -10,6 +10,7 @@ type Action =
   | "suppliers"
   | "laws"
   | "lawsProgress"
+  | "supplierLawsApproval"
   | "resample"
   | "resampleProgress"
   | "dispute"
@@ -32,6 +33,7 @@ const labels: Record<Action, string> = {
   suppliers: "Proveedores de lote",
   laws: "Reporte de leyes",
   lawsProgress: "Enviar / aprobar reporte de leyes",
+  supplierLawsApproval: "Conformidad del proveedor",
   resample: "Remuestreo",
   resampleProgress: "Avanzar remuestreo",
   dispute: "Dirimencia",
@@ -138,6 +140,12 @@ export function OperationActionForm({
           `/api/guides/${guideId}/assay-reports/${form.get("reportId")}`,
           "PATCH",
           { status: form.get("status") },
+        );
+      if (action === "supplierLawsApproval")
+        await sendJson(
+          `/api/guides/${guideId}/assay-reports/${form.get("reportId")}/supplier-approvals`,
+          "POST",
+          { supplierId: form.get("supplierId"), status: form.get("status") },
         );
       if (action === "resample")
         await sendJson(`/api/guides/${guideId}/resamples`, "POST", {
@@ -273,6 +281,7 @@ export function OperationActionForm({
     "suppliers",
     "laws",
     "lawsProgress",
+    "supplierLawsApproval",
     "resample",
     "resampleProgress",
     "dispute",
@@ -519,6 +528,45 @@ export function OperationActionForm({
                 name="status"
               >
                 <option>ENVIADO_PROVEEDOR</option>
+                <option>APROBADO</option>
+                <option>OBSERVADO</option>
+              </select>
+            </label>
+          </>
+        )}
+        {action === "supplierLawsApproval" && (
+          <>
+            <label className="grid gap-1 text-sm font-medium">
+              ID de reporte
+              <input
+                className="rounded border border-[#b9cbc4] px-3 py-2"
+                name="reportId"
+                required
+              />
+            </label>
+            <label className="grid gap-1 text-sm font-medium">
+              Proveedor
+              <select
+                className="rounded border border-[#b9cbc4] px-3 py-2"
+                name="supplierId"
+                required
+              >
+                <option value="">Seleccionar</option>
+                {counterparties
+                  .filter((item) => item.type === "PROVEEDOR")
+                  .map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.legalName}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label className="grid gap-1 text-sm font-medium">
+              Respuesta
+              <select
+                className="rounded border border-[#b9cbc4] px-3 py-2"
+                name="status"
+              >
                 <option>APROBADO</option>
                 <option>OBSERVADO</option>
               </select>

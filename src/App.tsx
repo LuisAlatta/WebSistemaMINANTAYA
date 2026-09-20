@@ -352,6 +352,16 @@ export function App() {
     );
 
   const records = data.items ?? [];
+  const pagedCount =
+    section === "Leyes y laboratorio"
+      ? Math.max(
+          data.reports?.length ?? 0,
+          data.resamples?.length ?? 0,
+          data.disputes?.length ?? 0,
+        )
+      : section === "Propuestas y liquidaciones"
+        ? Math.max(data.proposals?.length ?? 0, data.settlements?.length ?? 0)
+        : records.length;
   return (
     <main className="min-h-[100dvh] bg-[#f4f7f6] text-[#10242b]">
       <div className="grid min-h-[100dvh] lg:grid-cols-[248px_minmax(0,1fr)]">
@@ -646,7 +656,7 @@ export function App() {
               section !== "Usuarios" &&
               data.limit !== undefined && (
                 <PageControls
-                  count={records.length}
+                  count={pagedCount}
                   limit={data.limit}
                   offset={data.offset ?? pageOffset}
                   onChange={setPageOffset}

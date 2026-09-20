@@ -39,6 +39,7 @@ const paymentSchema = z.object({
 }).superRefine((value, context) => {
   if (Boolean(value.commercialInvoiceId) === Boolean(value.transportInvoiceId)) context.addIssue({ code: 'custom', message: 'Debe indicar una sola factura.' });
   if (value.paymentType.includes('TRANSPORTE') !== Boolean(value.transportInvoiceId)) context.addIssue({ code: 'custom', message: 'El tipo de pago no coincide con la factura.' });
+  if (['COMERCIAL', 'TRANSPORTE'].includes(value.paymentType) && value.currency !== 'USD') context.addIssue({ code: 'custom', path: ['currency'], message: 'Los pagos ordinarios se registran en USD. La detracción se controla por separado en PEN.' });
 });
 
 const exchangeRateSchema = z.object({ rateDate: z.iso.date(), usdToPen: z.number().positive().max(20) });
@@ -65,7 +66,7 @@ financeRoutes.post('/commercial-invoices', async (context) => {
     const linkId = crypto.randomUUID();
     statements.push(context.env.DB.prepare('INSERT INTO commercial_invoice_lots (id, commercial_invoice_id, lot_id, amount_usd_cents, created_at) VALUES (?, ?, ?, ?, ?)').bind(linkId, id, lotId, Math.floor(input.amountUsdCents / input.lotIds.length), now), prepareAuditLog({ db: context.env.DB, actor, action: 'CREATED', entityType: 'commercial_invoice_lot', entityId: linkId, after: { invoiceId: id, lotId }, occurredAt: now }));
   }
-  try { await executeAtomically(context.env.DB, statements); } catch (error) { if (error instanceof Error && error.message.includes('commercial_invoices.invoice_number')) throw new HttpError(409, 'La factura comercial ya existe.', 'INVOICE_ALREADY_EXISTS'); throw error; }
+  try { await executeAtomically(context.env.DB, statements); } catch (error) { if (error instanceof Error && error.message.includes('commercial_invoices.invoice_number')) throw new HttpError(409, 'La factura comercial ya existe.', 'INVOICE_ALREADY_EXISTS'); if (error instanceof Error && error.message.includes('commercial_invoice_lots.lot_id')) throw new HttpError(409, 'Uno o más lotes ya fueron facturados.', 'LOT_ALREADY_INVOICED'); throw error; }
   return context.json({ ...after, status: 'EMITIDA' }, 201);
 });
 
@@ -90,7 +91,7 @@ financeRoutes.post('/transport-invoices', async (context) => {
     const linkId = crypto.randomUUID();
     statements.push(db.prepare('INSERT INTO transport_invoice_guides (id, transport_invoice_id, guide_id, amount_usd_cents, created_at) VALUES (?, ?, ?, ?, ?)').bind(linkId, id, guideId, Math.floor(input.amountUsdCents / input.guideIds.length), now), prepareAuditLog({ db, actor, action: 'CREATED', entityType: 'transport_invoice_guide', entityId: linkId, after: { invoiceId: id, guideId }, occurredAt: now }));
   }
-  try { await executeAtomically(db, statements); } catch (error) { if (error instanceof Error && error.message.includes('transport_invoices.carrier_id')) throw new HttpError(409, 'La factura de transporte ya existe para este transportista.', 'TRANSPORT_INVOICE_ALREADY_EXISTS'); throw error; }
+  try { await executeAtomically(db, statements); } catch (error) { if (error instanceof Error && error.message.includes('transport_invoices.carrier_id')) throw new HttpError(409, 'La factura de transporte ya existe para este transportista.', 'TRANSPORT_INVOICE_ALREADY_EXISTS'); if (error instanceof Error && error.message.includes('transport_invoice_guides.guide_id')) throw new HttpError(409, 'Una o más guías ya tienen una factura de transporte activa.', 'GUIDE_ALREADY_HAS_TRANSPORT_INVOICE'); throw error; }
   return context.json({ ...after, status: 'REGISTRADA', detractionPercent: 0.04 }, 201);
 });
 
@@ -113,7 +114,7 @@ financeRoutes.post('/payments', async (context) => {
       statements.push(db.prepare(isTransport ? "UPDATE transport_invoices SET status = 'PAGADA', updated_at = ? WHERE id = ?" : "UPDATE commercial_invoices SET status = 'PAGADA', updated_at = ? WHERE id = ?").bind(now, invoice.id), prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: isTransport ? 'transport_invoice' : 'commercial_invoice', entityId: invoice.id, before: { status: invoice.status }, after: { status: 'PAGADA' }, occurredAt: now }));
     }
   }
-  await executeAtomically(db, statements);
+  try { await executeAtomically(db, statements); } catch (error) { if (error instanceof Error && error.message.includes('PAYMENT_EXCEEDS_BALANCE')) throw new HttpError(409, 'El pago supera el saldo pendiente de la factura.', 'PAYMENT_EXCEEDS_BALANCE'); throw error; }
   return context.json({ id, status: 'CONFIRMADO' }, 201);
 });
 
