@@ -13,6 +13,8 @@ describe('transport invoices API', () => {
     expect(response.status).toBe(201);
     expect(await env.DB.prepare('SELECT detraction_percent, detraction_pen_cents FROM transport_invoices').first()).toMatchObject({ detraction_percent: 0.04, detraction_pen_cents: 7400 });
     expect(await env.DB.prepare('SELECT COUNT(*) AS total FROM transport_invoice_guides').first()).toMatchObject({ total: 1 });
+    const duplicate = await worker.fetch(new Request('https://app.test/api/transport-invoices', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ carrierId: 'carrier-1', invoiceNumber: 'T001-0003', issuedAt: now, amountUsdCents: 50000, detractionPenCents: 7400, guideIds: ['transport-guide'] }) }), env, createExecutionContext());
+    expect(duplicate.status).toBe(409);
   });
 
   it('records transport payment and marks the invoice as paid when fully covered', async () => {

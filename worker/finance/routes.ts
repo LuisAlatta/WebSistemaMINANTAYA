@@ -51,8 +51,8 @@ financeRoutes.post('/commercial-invoices', async (context) => {
   if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
   const input = parsed.data;
   const placeholders = input.lotIds.map(() => '?').join(', ');
-  const lots = await context.env.DB.prepare(`SELECT id FROM lots WHERE id IN (${placeholders})`).bind(...input.lotIds).all<{ id: string }>();
-  if (lots.results.length !== input.lotIds.length) throw new HttpError(400, 'Uno o más lotes no existen.', 'LOT_NOT_FOUND');
+  const lots = await context.env.DB.prepare(`SELECT lots.id FROM lots JOIN guide_lots ON guide_lots.lot_id = lots.id JOIN guides ON guides.id = guide_lots.guide_id WHERE lots.id IN (${placeholders}) AND lots.status = 'ACTIVO' AND guides.status = 'LIQUIDADA'`).bind(...input.lotIds).all<{ id: string }>();
+  if (lots.results.length !== input.lotIds.length) throw new HttpError(400, 'Los lotes deben existir, estar activos y pertenecer a guías liquidadas.', 'LOT_NOT_READY_FOR_INVOICE');
   const used = await context.env.DB.prepare(`SELECT lot_id FROM commercial_invoice_lots WHERE lot_id IN (${placeholders})`).bind(...input.lotIds).all();
   if (used.results.length) throw new HttpError(409, 'Uno o más lotes ya fueron facturados.', 'LOT_ALREADY_INVOICED');
   const id = crypto.randomUUID(); const now = new Date().toISOString(); const actor = context.get('actor');
@@ -78,6 +78,8 @@ financeRoutes.post('/transport-invoices', async (context) => {
   const placeholders = input.guideIds.map(() => '?').join(', ');
   const guides = await db.prepare(`SELECT id FROM guides WHERE id IN (${placeholders}) AND status <> 'ANULADA'`).bind(...input.guideIds).all<{ id: string }>();
   if (guides.results.length !== input.guideIds.length) throw new HttpError(400, 'Una o más guías no existen o fueron anuladas.', 'INVALID_TRANSPORT_GUIDE');
+  const alreadyInvoiced = await db.prepare(`SELECT DISTINCT transport_invoice_guides.guide_id AS guideId FROM transport_invoice_guides JOIN transport_invoices ON transport_invoices.id = transport_invoice_guides.transport_invoice_id WHERE transport_invoice_guides.guide_id IN (${placeholders}) AND transport_invoices.status <> 'ANULADA'`).bind(...input.guideIds).all<{ guideId: string }>();
+  if (alreadyInvoiced.results.length) throw new HttpError(409, 'Una o más guías ya tienen una factura de transporte activa.', 'GUIDE_ALREADY_HAS_TRANSPORT_INVOICE');
   const id = crypto.randomUUID(); const now = new Date().toISOString(); const actor = context.get('actor');
   const after = { id, carrierId: input.carrierId, invoiceNumber: input.invoiceNumber, amountUsdCents: input.amountUsdCents, guideIds: input.guideIds };
   const statements: D1PreparedStatement[] = [
@@ -106,7 +108,8 @@ financeRoutes.post('/payments', async (context) => {
   ];
   if (input.currency === 'USD' && !input.paymentType.startsWith('DETRACCION')) {
     const total = await db.prepare(isTransport ? "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM payments WHERE transport_invoice_id = ? AND currency = 'USD' AND status = 'CONFIRMADO'" : "SELECT COALESCE(SUM(amount_cents), 0) AS total FROM payments WHERE commercial_invoice_id = ? AND currency = 'USD' AND status = 'CONFIRMADO'").bind(invoice.id).first<{ total: number }>();
-    if ((total?.total ?? 0) + input.amountCents >= invoice.amount_usd_cents) {
+    if ((total?.total ?? 0) + input.amountCents > invoice.amount_usd_cents) throw new HttpError(409, 'El pago supera el saldo pendiente de la factura.', 'PAYMENT_EXCEEDS_BALANCE');
+    if ((total?.total ?? 0) + input.amountCents === invoice.amount_usd_cents) {
       statements.push(db.prepare(isTransport ? "UPDATE transport_invoices SET status = 'PAGADA', updated_at = ? WHERE id = ?" : "UPDATE commercial_invoices SET status = 'PAGADA', updated_at = ? WHERE id = ?").bind(now, invoice.id), prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: isTransport ? 'transport_invoice' : 'commercial_invoice', entityId: invoice.id, before: { status: invoice.status }, after: { status: 'PAGADA' }, occurredAt: now }));
     }
   }

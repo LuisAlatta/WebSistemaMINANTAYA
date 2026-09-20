@@ -23,6 +23,8 @@ describe('commercial invoices API', () => {
     await env.DB.prepare("INSERT INTO payments (id, payment_type, commercial_invoice_id, paid_at, currency, amount_cents, status, created_at, updated_at) VALUES (?, 'COMERCIAL', ?, ?, 'USD', ?, 'CONFIRMADO', ?, ?)").bind('paid-payment', 'invoice-paid', '2026-09-18T00:00:00.000Z', 100000, '2026-09-18T00:00:00.000Z', '2026-09-18T00:00:00.000Z').run();
     const blocked = await worker.fetch(new Request('https://app.test/api/commercial-invoices/invoice-paid/cancel', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ reason: 'No corresponde anular pago confirmado.' }) }), env, createExecutionContext());
     expect(blocked.status).toBe(409);
+    const overpayment = await worker.fetch(new Request('https://app.test/api/payments', { method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ paymentType: 'COMERCIAL', commercialInvoiceId: 'invoice-paid', paidAt: '2026-09-18T00:00:00.000Z', currency: 'USD', amountCents: 1 }) }), env, createExecutionContext());
+    expect(overpayment.status).toBe(409);
     await expect(env.DB.prepare('SELECT status FROM commercial_invoices WHERE id = ?').bind('invoice-paid').first()).resolves.toMatchObject({ status: 'EMITIDA' });
   });
 });

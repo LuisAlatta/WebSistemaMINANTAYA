@@ -7,9 +7,11 @@ import { HttpError } from '../http/errors';
 
 export const assayReportSchema = z.object({
   reportNumber: z.string().trim().min(1).max(100).optional(),
+  laboratoryId: z.string().uuid().optional(),
   source: z.enum(['PLANTA', 'EXTERNO']),
   results: z.array(z.object({ lotId: z.string().uuid(), element: z.string().trim().min(1).max(20), resultValue: z.number().finite(), unit: z.string().trim().min(1).max(20) })).min(1),
 });
+export const assayReportProgressSchema = z.object({ status: z.enum(['ENVIADO_PROVEEDOR', 'APROBADO', 'OBSERVADO']) });
 
 export const qualityExceptionSchema = z.object({ reason: z.string().trim().min(3).max(1_000) });
 export const resampleProgressSchema = z.object({ status: z.enum(['COORDINADO', 'ENVIADO_LABORATORIO', 'RESULTADO_RECIBIDO', 'CERRADO']) });
@@ -36,9 +38,13 @@ export async function recordAssayReport(db: D1Database, actor: Actor, guideId: s
 
   const now = new Date().toISOString();
   const reportId = crypto.randomUUID();
-  const after = { id: reportId, guideId, reportNumber: input.reportNumber ?? null, source: input.source, resultCount: input.results.length };
+  if (input.laboratoryId) {
+    const laboratory = await db.prepare("SELECT id FROM counterparties WHERE id = ? AND type = 'LABORATORIO' AND active = 1").bind(input.laboratoryId).first();
+    if (!laboratory) throw new HttpError(400, 'El laboratorio no existe o no está activo.', 'INVALID_LABORATORY');
+  }
+  const after = { id: reportId, guideId, reportNumber: input.reportNumber ?? null, laboratoryId: input.laboratoryId ?? null, source: input.source, resultCount: input.results.length };
   const statements: D1PreparedStatement[] = [
-    db.prepare('INSERT INTO assay_reports (id, guide_id, report_number, reported_at, received_at, status, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(reportId, guideId, input.reportNumber ?? null, now, now, 'RECIBIDO', input.source, now, now),
+    db.prepare('INSERT INTO assay_reports (id, guide_id, laboratory_id, report_number, reported_at, received_at, status, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(reportId, guideId, input.laboratoryId ?? null, input.reportNumber ?? null, now, now, 'RECIBIDO', input.source, now, now),
     db.prepare('UPDATE guides SET status = ?, updated_at = ? WHERE id = ?').bind('LEYES_RECIBIDAS', now, guideId),
     db.prepare('INSERT INTO guide_events (id, guide_id, event_type, occurred_at, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(crypto.randomUUID(), guideId, 'ESTADO_CAMBIADO', now, JSON.stringify({ before: 'LEYES_PENDIENTES', after: 'LEYES_RECIBIDAS', reportId }), now),
     prepareAuditLog({ db, actor, action: 'CREATED', entityType: 'assay_report', entityId: reportId, after, occurredAt: now }),
@@ -50,6 +56,33 @@ export async function recordAssayReport(db: D1Database, actor: Actor, guideId: s
   }
   await executeAtomically(db, statements);
   return { id: reportId, guideId, status: 'RECIBIDO', resultCount: input.results.length };
+}
+
+export async function progressAssayReport(
+  db: D1Database,
+  actor: Actor,
+  guideId: string,
+  reportId: string,
+  status: z.infer<typeof assayReportProgressSchema>['status'],
+) {
+  const report = await db.prepare('SELECT id, status FROM assay_reports WHERE id = ? AND guide_id = ?').bind(reportId, guideId).first<{ id: string; status: string }>();
+  if (!report) throw new HttpError(404, 'El reporte no pertenece a la guía.', 'ASSAY_REPORT_NOT_FOUND');
+  const transitions: Record<string, readonly string[]> = { RECIBIDO: ['ENVIADO_PROVEEDOR'], ENVIADO_PROVEEDOR: ['APROBADO', 'OBSERVADO'], APROBADO: [], OBSERVADO: [] };
+  if (!transitions[report.status]?.includes(status)) throw new HttpError(409, 'La etapa del reporte de leyes no es válida.', 'INVALID_ASSAY_REPORT_TRANSITION');
+  const now = new Date().toISOString(); const before = { id: report.id, status: report.status }; const after = { id: report.id, status };
+  const statements: D1PreparedStatement[] = [
+    db.prepare('UPDATE assay_reports SET status = ?, updated_at = ? WHERE id = ?').bind(status, now, report.id),
+    prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'assay_report', entityId: report.id, before, after, occurredAt: now }),
+  ];
+  if (status === 'APROBADO') {
+    statements.push(
+      db.prepare("UPDATE guides SET status = 'PROPUESTA_PENDIENTE', updated_at = ? WHERE id = ?").bind(now, guideId),
+      db.prepare("INSERT INTO guide_events (id, guide_id, event_type, occurred_at, detail_json, created_at) VALUES (?, ?, 'ESTADO_CAMBIADO', ?, ?, ?)").bind(crypto.randomUUID(), guideId, now, JSON.stringify({ before: 'LEYES_RECIBIDAS', after: 'PROPUESTA_PENDIENTE', reportId }), now),
+      prepareAuditLog({ db, actor, action: 'STATUS_CHANGED', entityType: 'guide', entityId: guideId, before: { status: 'LEYES_RECIBIDAS' }, after: { status: 'PROPUESTA_PENDIENTE' }, occurredAt: now }),
+    );
+  }
+  await executeAtomically(db, statements);
+  return after;
 }
 
 async function guideForException(db: D1Database, guideId: string, targetStatus: 'REMUESTREO' | 'DIRIMENCIA') {

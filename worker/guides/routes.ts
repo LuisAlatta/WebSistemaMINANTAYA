@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { AppVariables } from '../http/middleware';
 import { HttpError } from '../http/errors';
-import { assayReportSchema, disputeProgressSchema, openDispute, openResample, progressDispute, progressResample, qualityExceptionSchema, recordAssayReport, resampleProgressSchema } from '../quality/service';
+import { assayReportProgressSchema, assayReportSchema, disputeProgressSchema, openDispute, openResample, progressAssayReport, progressDispute, progressResample, qualityExceptionSchema, recordAssayReport, resampleProgressSchema } from '../quality/service';
 import {
   changeGuideStatus,
   changeGuideStatusSchema,
@@ -82,6 +82,12 @@ guideRoutes.post('/:id/assay-reports', async (context) => {
   if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
   const report = await recordAssayReport(context.env.DB, context.get('actor'), context.req.param('id'), parsed.data);
   return context.json(report, 201);
+});
+
+guideRoutes.patch('/:id/assay-reports/:reportId', async (context) => {
+  const parsed = assayReportProgressSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  return context.json(await progressAssayReport(context.env.DB, context.get('actor'), context.req.param('id'), context.req.param('reportId'), parsed.data.status));
 });
 
 guideRoutes.post('/:id/resamples', async (context) => {

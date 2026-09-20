@@ -42,7 +42,7 @@ describe('guides API', () => {
     expect(audit).toMatchObject({ action: 'CREATED', actor_username: 'admin@test.pe' });
   });
 
-  it('creates an open warning when a guide has more than six lots', async () => {
+  it('rejects a guide with more than six lots', async () => {
     const lots = Array.from({ length: 7 }, (_, index) => ({ code: `L-W-${index + 1}` }));
     const response = await worker.fetch(
       new Request('https://app.test/api/guides', {
@@ -61,15 +61,7 @@ describe('guides API', () => {
       createExecutionContext(),
     );
 
-    expect(response.status).toBe(201);
-    const alert = await env.DB.prepare(
-      "SELECT alert_type, severity, status FROM alerts WHERE guide_id = (SELECT id FROM guides WHERE gre_normalized = 'EG07-366')",
-    ).first();
-    expect(alert).toMatchObject({
-      alert_type: 'LOTES_SUPERADOS',
-      severity: 'ADVERTENCIA',
-      status: 'ABIERTA',
-    });
+    expect(response.status).toBe(400);
   });
 
   it('changes status only through an allowed transition and records it', async () => {

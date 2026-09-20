@@ -23,7 +23,7 @@ export const createGuideSchema = z
     carrierId: z.string().uuid().optional(),
     transportReference: z.string().trim().max(120).optional(),
     notes: z.string().trim().max(2_000).optional(),
-    lots: z.array(lotInputSchema).min(1).max(50),
+    lots: z.array(lotInputSchema).min(1).max(6),
   })
   .superRefine((value, context) => {
     const uniqueCodes = new Set<string>();
@@ -62,7 +62,7 @@ const allowedTransitions: Record<GuideStatus, readonly GuideStatus[]> = {
   EMITIDA: ['EN_PLANTA', 'ANULADA'],
   EN_PLANTA: ['LEYES_PENDIENTES', 'RETIRO_PENDIENTE', 'ANULADA'],
   LEYES_PENDIENTES: ['LEYES_RECIBIDAS', 'RETIRO_PENDIENTE'],
-  LEYES_RECIBIDAS: ['PROPUESTA_PENDIENTE', 'REMUESTREO', 'DIRIMENCIA', 'RETIRO_PENDIENTE'],
+  LEYES_RECIBIDAS: ['REMUESTREO', 'DIRIMENCIA', 'RETIRO_PENDIENTE'],
   PROPUESTA_PENDIENTE: ['CONFORME', 'REMUESTREO', 'DIRIMENCIA'],
   CONFORME: ['LIQUIDADA', 'DIRIMENCIA'],
   REMUESTREO: ['LEYES_RECIBIDAS', 'DIRIMENCIA', 'RETIRO_PENDIENTE'],
@@ -192,42 +192,6 @@ export async function createGuide(
         entityType: 'lot',
         entityId: lotId,
         after: lotSnapshot,
-        occurredAt: now,
-      }),
-    );
-  }
-
-  if (input.lots.length > 6) {
-    const alertId = crypto.randomUUID();
-    const alertSnapshot = {
-      id: alertId,
-      type: 'LOTES_SUPERADOS',
-      lotCount: input.lots.length,
-    };
-    statements.push(
-      db
-        .prepare(
-          `INSERT INTO alerts (
-            id, guide_id, alert_type, severity, status, detail_json, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .bind(
-          alertId,
-          guideId,
-          'LOTES_SUPERADOS',
-          'ADVERTENCIA',
-          'ABIERTA',
-          JSON.stringify(alertSnapshot),
-          now,
-          now,
-        ),
-      prepareAuditLog({
-        db,
-        actor,
-        action: 'CREATED',
-        entityType: 'alert',
-        entityId: alertId,
-        after: alertSnapshot,
         occurredAt: now,
       }),
     );

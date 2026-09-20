@@ -31,7 +31,14 @@ describe('assay reports API', () => {
     );
 
     expect(response.status).toBe(201);
+    const report = (await response.json()) as { id: string };
     expect(await env.DB.prepare('SELECT status FROM guides WHERE id = ?').bind(guide.id).first()).toMatchObject({ status: 'LEYES_RECIBIDAS' });
     expect(await env.DB.prepare('SELECT COUNT(*) AS total FROM assay_results').first()).toMatchObject({ total: 1 });
+
+    const sent = await worker.fetch(new Request(`https://app.test/api/guides/${guide.id}/assay-reports/${report.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ status: 'ENVIADO_PROVEEDOR' }) }), env, createExecutionContext());
+    expect(sent.status).toBe(200);
+    const approved = await worker.fetch(new Request(`https://app.test/api/guides/${guide.id}/assay-reports/${report.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' }, body: JSON.stringify({ status: 'APROBADO' }) }), env, createExecutionContext());
+    expect(approved.status).toBe(200);
+    await expect(env.DB.prepare('SELECT status FROM guides WHERE id = ?').bind(guide.id).first()).resolves.toMatchObject({ status: 'PROPUESTA_PENDIENTE' });
   });
 });
