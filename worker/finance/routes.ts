@@ -89,9 +89,9 @@ financeRoutes.post('/transport-invoices', async (context) => {
   ];
   for (const guideId of input.guideIds) {
     const linkId = crypto.randomUUID();
-    statements.push(db.prepare('INSERT INTO transport_invoice_guides (id, transport_invoice_id, guide_id, amount_usd_cents, created_at) VALUES (?, ?, ?, ?, ?)').bind(linkId, id, guideId, Math.floor(input.amountUsdCents / input.guideIds.length), now), prepareAuditLog({ db, actor, action: 'CREATED', entityType: 'transport_invoice_guide', entityId: linkId, after: { invoiceId: id, guideId }, occurredAt: now }));
+    statements.push(db.prepare('INSERT INTO active_transport_guide_locks (guide_id, transport_invoice_id, created_at) VALUES (?, ?, ?)').bind(guideId, id, now), db.prepare('INSERT INTO transport_invoice_guides (id, transport_invoice_id, guide_id, amount_usd_cents, created_at) VALUES (?, ?, ?, ?, ?)').bind(linkId, id, guideId, Math.floor(input.amountUsdCents / input.guideIds.length), now), prepareAuditLog({ db, actor, action: 'CREATED', entityType: 'transport_invoice_guide', entityId: linkId, after: { invoiceId: id, guideId }, occurredAt: now }));
   }
-  try { await executeAtomically(db, statements); } catch (error) { if (error instanceof Error && error.message.includes('transport_invoices.carrier_id')) throw new HttpError(409, 'La factura de transporte ya existe para este transportista.', 'TRANSPORT_INVOICE_ALREADY_EXISTS'); if (error instanceof Error && (error.message.includes('transport_invoice_guides.guide_id') || error.message.includes('GUIDE_ALREADY_HAS_TRANSPORT_INVOICE'))) throw new HttpError(409, 'Una o más guías ya tienen una factura de transporte activa.', 'GUIDE_ALREADY_HAS_TRANSPORT_INVOICE'); throw error; }
+  try { await executeAtomically(db, statements); } catch (error) { if (error instanceof Error && error.message.includes('transport_invoices.carrier_id')) throw new HttpError(409, 'La factura de transporte ya existe para este transportista.', 'TRANSPORT_INVOICE_ALREADY_EXISTS'); if (error instanceof Error && (error.message.includes('transport_invoice_guides.guide_id') || error.message.includes('active_transport_guide_locks.guide_id'))) throw new HttpError(409, 'Una o más guías ya tienen una factura de transporte activa.', 'GUIDE_ALREADY_HAS_TRANSPORT_INVOICE'); throw error; }
   return context.json({ ...after, status: 'REGISTRADA', detractionPercent: 0.04 }, 201);
 });
 
@@ -152,6 +152,7 @@ async function cancelInvoice(
   const now = new Date().toISOString(); const before = { id, status: invoice.status }; const after = { id, status: 'ANULADA', reason };
   await executeAtomically(db, [
     db.prepare(`UPDATE ${table} SET status = 'ANULADA', void_reason = ?, updated_at = ? WHERE id = ?`).bind(reason, now, id),
+    ...(kind === 'transport' ? [db.prepare('DELETE FROM active_transport_guide_locks WHERE transport_invoice_id = ?').bind(id)] : []),
     prepareAuditLog({ db, actor, action: 'CANCELLED', entityType, entityId: id, before, after, reason, occurredAt: now }),
   ]);
   return after;

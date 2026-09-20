@@ -1,31 +1,18 @@
 CREATE UNIQUE INDEX idx_commercial_invoice_lots_lot_unique ON commercial_invoice_lots(lot_id);
-CREATE TRIGGER prevent_transport_invoice_duplicate
-BEFORE INSERT ON transport_invoice_guides
-WHEN EXISTS (
-  SELECT 1
-  FROM transport_invoice_guides links
-  JOIN transport_invoices invoices ON invoices.id = links.transport_invoice_id
-  WHERE links.guide_id = NEW.guide_id AND invoices.status <> 'ANULADA'
-)
-BEGIN
-  SELECT RAISE(ABORT, 'GUIDE_ALREADY_HAS_TRANSPORT_INVOICE');
-END;
+CREATE TABLE active_transport_guide_locks (
+  guide_id TEXT PRIMARY KEY REFERENCES guides(id),
+  transport_invoice_id TEXT NOT NULL REFERENCES transport_invoices(id),
+  created_at TEXT NOT NULL
+);
+INSERT OR IGNORE INTO active_transport_guide_locks (guide_id, transport_invoice_id, created_at)
+SELECT guide_id, MIN(transport_invoice_id), MIN(created_at)
+FROM transport_invoice_guides
+GROUP BY guide_id;
 
-CREATE TRIGGER prevent_commercial_payment_overrun
-BEFORE INSERT ON payments
-WHEN NEW.payment_type = 'COMERCIAL' AND NEW.currency = 'USD' AND NEW.status = 'CONFIRMADO'
-BEGIN
-  SELECT CASE WHEN COALESCE((SELECT SUM(amount_cents) FROM payments WHERE commercial_invoice_id = NEW.commercial_invoice_id AND payment_type = 'COMERCIAL' AND currency = 'USD' AND status = 'CONFIRMADO'), 0) + NEW.amount_cents > (SELECT amount_usd_cents FROM commercial_invoices WHERE id = NEW.commercial_invoice_id)
-    THEN RAISE(ABORT, 'PAYMENT_EXCEEDS_BALANCE') END;
-END;
-
-CREATE TRIGGER prevent_transport_payment_overrun
-BEFORE INSERT ON payments
-WHEN NEW.payment_type = 'TRANSPORTE' AND NEW.currency = 'USD' AND NEW.status = 'CONFIRMADO'
-BEGIN
-  SELECT CASE WHEN COALESCE((SELECT SUM(amount_cents) FROM payments WHERE transport_invoice_id = NEW.transport_invoice_id AND payment_type = 'TRANSPORTE' AND currency = 'USD' AND status = 'CONFIRMADO'), 0) + NEW.amount_cents > (SELECT amount_usd_cents FROM transport_invoices WHERE id = NEW.transport_invoice_id)
-    THEN RAISE(ABORT, 'PAYMENT_EXCEEDS_BALANCE') END;
-END;
+ALTER TABLE commercial_invoices ADD COLUMN paid_usd_cents INTEGER NOT NULL DEFAULT 0 CHECK (paid_usd_cents >= 0);
+ALTER TABLE transport_invoices ADD COLUMN paid_usd_cents INTEGER NOT NULL DEFAULT 0 CHECK (paid_usd_cents >= 0);
+UPDATE commercial_invoices SET paid_usd_cents = COALESCE((SELECT SUM(amount_cents) FROM payments WHERE payments.commercial_invoice_id = commercial_invoices.id AND payment_type = 'COMERCIAL' AND currency = 'USD' AND status = 'CONFIRMADO'), 0);
+UPDATE transport_invoices SET paid_usd_cents = COALESCE((SELECT SUM(amount_cents) FROM payments WHERE payments.transport_invoice_id = transport_invoices.id AND payment_type = 'TRANSPORTE' AND currency = 'USD' AND status = 'CONFIRMADO'), 0);
 
 CREATE TABLE assay_report_supplier_approvals (
   id TEXT PRIMARY KEY,
