@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 
 import type { AppVariables } from '../http/middleware';
 import { HttpError } from '../http/errors';
@@ -9,6 +10,11 @@ import {
   createGuide,
   createGuideSchema,
   listGuides,
+  confirmLotWithdrawal,
+  lotSupplierSchema,
+  replaceLotSuppliers,
+  requestLotWithdrawal,
+  withdrawalSchema,
 } from './service';
 
 export const guideRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>();
@@ -50,6 +56,24 @@ guideRoutes.patch('/:id/status', async (context) => {
     parsed.data,
   );
   return context.json(guide);
+});
+
+guideRoutes.post('/:id/lots/:guideLotId/withdrawal', async (context) => {
+  const parsed = withdrawalSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  return context.json(await requestLotWithdrawal(context.env.DB, context.get('actor'), context.req.param('id'), context.req.param('guideLotId'), parsed.data.reason), 201);
+});
+
+guideRoutes.patch('/:id/lots/:guideLotId/withdrawal', async (context) => {
+  const parsed = withdrawalSchema.safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  return context.json(await confirmLotWithdrawal(context.env.DB, context.get('actor'), context.req.param('id'), context.req.param('guideLotId'), parsed.data.reason));
+});
+
+guideRoutes.put('/:id/lots/:guideLotId/suppliers', async (context) => {
+  const parsed = z.array(lotSupplierSchema).min(1).safeParse(await context.req.json());
+  if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  return context.json(await replaceLotSuppliers(context.env.DB, context.get('actor'), context.req.param('id'), context.req.param('guideLotId'), parsed.data));
 });
 
 guideRoutes.post('/:id/assay-reports', async (context) => {

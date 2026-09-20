@@ -89,6 +89,15 @@ export const changeGuideStatusSchema = z
     }
   });
 
+export const withdrawalSchema = z.object({
+  reason: z.string().trim().min(3).max(1_000),
+});
+
+export const lotSupplierSchema = z.object({
+  supplierId: z.string().uuid(),
+  allocationPercent: z.number().positive().max(1).optional(),
+});
+
 export async function createGuide(
   db: D1Database,
   actor: Actor,
@@ -301,6 +310,93 @@ export async function changeGuideStatus(
   ]);
 
   return { id: guideId, status: input.status };
+}
+
+export async function requestLotWithdrawal(
+  db: D1Database,
+  actor: Actor,
+  guideId: string,
+  guideLotId: string,
+  reason: string,
+): Promise<{ id: string; status: 'RETIRO_PENDIENTE' }> {
+  const row = await db.prepare(
+    `SELECT guide_lots.id, guide_lots.withdrawal_requested AS withdrawalRequested, lots.id AS lotId,
+      lots.status AS lotStatus, guides.status AS guideStatus, guides.gre_original AS gre
+     FROM guide_lots JOIN lots ON lots.id = guide_lots.lot_id JOIN guides ON guides.id = guide_lots.guide_id
+     WHERE guide_lots.id = ? AND guide_lots.guide_id = ?`,
+  ).bind(guideLotId, guideId).first<{ id: string; withdrawalRequested: number; lotId: string; lotStatus: string; guideStatus: GuideStatus; gre: string }>();
+  if (!row) throw new HttpError(404, 'El lote no pertenece a la guía.', 'GUIDE_LOT_NOT_FOUND');
+  if (row.withdrawalRequested || row.lotStatus === 'RETIRADO') throw new HttpError(409, 'El retiro de este lote ya fue solicitado o confirmado.', 'WITHDRAWAL_ALREADY_REQUESTED');
+  if (['ANULADA', 'RETIRADA', 'FACTURADA'].includes(row.guideStatus)) throw new HttpError(409, 'La guía no permite solicitar retiros en su estado actual.', 'INVALID_WITHDRAWAL_STATUS');
+
+  const now = new Date().toISOString();
+  const before = { guideId, guideLotId, lotId: row.lotId, guideStatus: row.guideStatus, lotStatus: row.lotStatus, withdrawalRequested: false };
+  const after = { ...before, guideStatus: 'RETIRO_PENDIENTE', lotStatus: 'RETIRO_PENDIENTE', withdrawalRequested: true, reason };
+  await executeAtomically(db, [
+    db.prepare('UPDATE guide_lots SET withdrawal_requested = 1, withdrawal_reason = ?, updated_at = ? WHERE id = ?').bind(reason, now, guideLotId),
+    db.prepare("UPDATE lots SET status = 'RETIRO_PENDIENTE', updated_at = ? WHERE id = ?").bind(now, row.lotId),
+    db.prepare("UPDATE guides SET status = 'RETIRO_PENDIENTE', updated_at = ? WHERE id = ?").bind(now, guideId),
+    db.prepare("INSERT INTO guide_events (id, guide_id, event_type, occurred_at, detail_json, created_at) VALUES (?, ?, 'RETIRO_SOLICITADO', ?, ?, ?)").bind(crypto.randomUUID(), guideId, now, JSON.stringify(after), now),
+    prepareAuditLog({ db, actor, action: 'WITHDRAWAL_REQUESTED', entityType: 'guide_lot', entityId: guideLotId, before, after, reason, occurredAt: now }),
+  ]);
+  return { id: guideLotId, status: 'RETIRO_PENDIENTE' };
+}
+
+export async function confirmLotWithdrawal(
+  db: D1Database,
+  actor: Actor,
+  guideId: string,
+  guideLotId: string,
+  reason: string,
+): Promise<{ id: string; status: 'RETIRADO' }> {
+  const row = await db.prepare(
+    `SELECT guide_lots.id, guide_lots.withdrawal_requested AS withdrawalRequested, lots.id AS lotId, lots.status AS lotStatus
+     FROM guide_lots JOIN lots ON lots.id = guide_lots.lot_id
+     WHERE guide_lots.id = ? AND guide_lots.guide_id = ?`,
+  ).bind(guideLotId, guideId).first<{ id: string; withdrawalRequested: number; lotId: string; lotStatus: string }>();
+  if (!row) throw new HttpError(404, 'El lote no pertenece a la guía.', 'GUIDE_LOT_NOT_FOUND');
+  if (!row.withdrawalRequested || row.lotStatus === 'RETIRADO') throw new HttpError(409, 'Primero debe solicitarse el retiro del lote.', 'WITHDRAWAL_NOT_REQUESTED');
+  const now = new Date().toISOString();
+  const remaining = await db.prepare("SELECT COUNT(*) AS total FROM guide_lots JOIN lots ON lots.id = guide_lots.lot_id WHERE guide_lots.guide_id = ? AND lots.status <> 'RETIRADO'").bind(guideId).first<{ total: number }>();
+  const completesGuide = (remaining?.total ?? 1) === 1;
+  const before = { guideId, guideLotId, lotId: row.lotId, lotStatus: row.lotStatus };
+  const after = { ...before, lotStatus: 'RETIRADO', guideStatus: completesGuide ? 'RETIRADA' : 'RETIRO_PENDIENTE', reason };
+  await executeAtomically(db, [
+    db.prepare('UPDATE guide_lots SET withdrawal_completed_at = ?, withdrawal_reason = ?, updated_at = ? WHERE id = ?').bind(now, reason, now, guideLotId),
+    db.prepare("UPDATE lots SET status = 'RETIRADO', updated_at = ? WHERE id = ?").bind(now, row.lotId),
+    ...(completesGuide ? [db.prepare("UPDATE guides SET status = 'RETIRADA', updated_at = ? WHERE id = ?").bind(now, guideId)] : []),
+    db.prepare("INSERT INTO guide_events (id, guide_id, event_type, occurred_at, detail_json, created_at) VALUES (?, ?, 'RETIRO_CONFIRMADO', ?, ?, ?)").bind(crypto.randomUUID(), guideId, now, JSON.stringify(after), now),
+    prepareAuditLog({ db, actor, action: 'WITHDRAWAL_CONFIRMED', entityType: 'guide_lot', entityId: guideLotId, before, after, reason, occurredAt: now }),
+  ]);
+  return { id: guideLotId, status: 'RETIRADO' };
+}
+
+export async function replaceLotSuppliers(
+  db: D1Database,
+  actor: Actor,
+  guideId: string,
+  guideLotId: string,
+  suppliers: z.infer<typeof lotSupplierSchema>[],
+): Promise<{ id: string; supplierCount: number }> {
+  if (!suppliers.length) throw new HttpError(400, 'Debe indicar por lo menos un proveedor.', 'SUPPLIER_REQUIRED');
+  if (new Set(suppliers.map((supplier) => supplier.supplierId)).size !== suppliers.length) throw new HttpError(400, 'No puede repetir proveedores.', 'DUPLICATE_SUPPLIER');
+  const total = suppliers.reduce((sum, supplier) => sum + (supplier.allocationPercent ?? 0), 0);
+  if (total > 1.000001) throw new HttpError(400, 'La distribución entre proveedores no puede superar 100%.', 'INVALID_SUPPLIER_ALLOCATION');
+  const link = await db.prepare('SELECT id FROM guide_lots WHERE id = ? AND guide_id = ?').bind(guideLotId, guideId).first<{ id: string }>();
+  if (!link) throw new HttpError(404, 'El lote no pertenece a la guía.', 'GUIDE_LOT_NOT_FOUND');
+  const placeholders = suppliers.map(() => '?').join(', ');
+  const valid = await db.prepare(`SELECT id FROM counterparties WHERE id IN (${placeholders}) AND type = 'PROVEEDOR' AND active = 1`).bind(...suppliers.map((supplier) => supplier.supplierId)).all<{ id: string }>();
+  if (valid.results.length !== suppliers.length) throw new HttpError(400, 'Uno o más proveedores no existen o no están activos.', 'INVALID_SUPPLIER');
+  const now = new Date().toISOString();
+  const before = await db.prepare('SELECT supplier_id AS supplierId, allocation_percent AS allocationPercent FROM lot_suppliers WHERE guide_lot_id = ?').bind(guideLotId).all();
+  const after = { guideId, guideLotId, suppliers };
+  const statements: D1PreparedStatement[] = [
+    db.prepare('DELETE FROM lot_suppliers WHERE guide_lot_id = ?').bind(guideLotId),
+    prepareAuditLog({ db, actor, action: 'SUPPLIERS_REPLACED', entityType: 'guide_lot', entityId: guideLotId, before: before.results, after, occurredAt: now }),
+  ];
+  for (const supplier of suppliers) statements.push(db.prepare('INSERT INTO lot_suppliers (id, guide_lot_id, supplier_id, allocation_percent, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').bind(crypto.randomUUID(), guideLotId, supplier.supplierId, supplier.allocationPercent ?? null, now, now));
+  await executeAtomically(db, statements);
+  return { id: guideLotId, supplierCount: suppliers.length };
 }
 
 export async function listGuides(db: D1Database): Promise<{

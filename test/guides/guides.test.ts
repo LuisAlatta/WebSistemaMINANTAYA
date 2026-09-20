@@ -122,4 +122,27 @@ describe('guides API', () => {
       ]),
     });
   });
+
+  it('requests and confirms the withdrawal of a specific lot with an audit trail', async () => {
+    const created = await worker.fetch(new Request('https://app.test/api/guides', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' },
+      body: JSON.stringify({ gre: 'EG07-368', issuedAt: '2026-09-18T00:00:00.000Z', lots: [{ code: 'L-RETIRO' }] }),
+    }), env, createExecutionContext());
+    const guide = (await created.json()) as { id: string };
+    const link = await env.DB.prepare('SELECT id FROM guide_lots WHERE guide_id = ?').bind(guide.id).first<{ id: string }>();
+
+    const requested = await worker.fetch(new Request(`https://app.test/api/guides/${guide.id}/lots/${link?.id}/withdrawal`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' },
+      body: JSON.stringify({ reason: 'El proveedor solicitó retirar el lote.' }),
+    }), env, createExecutionContext());
+    expect(requested.status).toBe(201);
+
+    const confirmed = await worker.fetch(new Request(`https://app.test/api/guides/${guide.id}/lots/${link?.id}/withdrawal`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' },
+      body: JSON.stringify({ reason: 'Retiro confirmado en planta.' }),
+    }), env, createExecutionContext());
+    expect(confirmed.status).toBe(200);
+    await expect(env.DB.prepare('SELECT status FROM lots WHERE id = (SELECT lot_id FROM guide_lots WHERE id = ?)').bind(link?.id).first()).resolves.toMatchObject({ status: 'RETIRADO' });
+    await expect(env.DB.prepare("SELECT action FROM audit_logs WHERE entity_type = 'guide_lot' AND action = 'WITHDRAWAL_CONFIRMED'").first()).resolves.toMatchObject({ action: 'WITHDRAWAL_CONFIRMED' });
+  });
 });
