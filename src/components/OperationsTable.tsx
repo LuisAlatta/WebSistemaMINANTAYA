@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, ReactNode } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback, ReactNode } from "react";
 import type { ApiRow } from "../lib/api";
 import { StatusBadge } from "./StatusBadge";
 
@@ -78,6 +78,17 @@ export function cellContent(value: unknown, format?: Column["format"]): ReactNod
   }
 }
 
+export function getDefaultWidth(col: Column): number {
+  if (col.format === "usd" || col.format === "pen") return 140;
+  if (col.format === "date") return 115;
+  if (col.format === "status") return 130;
+  if (col.format === "number") return 95;
+  if (["gre", "invoiceNumber", "lotCode", "ruc"].includes(col.key)) return 130;
+  if (["carrier", "suppliers", "plant", "actorUsername"].includes(col.key)) return 180;
+  if (["reason", "description", "action", "label"].includes(col.key)) return 240;
+  return 140;
+}
+
 export type OperationsTableProps = {
   columns: Column[];
   items: ApiRow[];
@@ -106,6 +117,95 @@ export function OperationsTable({
   const [localSearch, setLocalSearch] = useState("");
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
+
+  // Column widths state
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>(() => {
+    const initial: Record<string, number> = {};
+    columns.forEach((col) => {
+      initial[col.key] = getDefaultWidth(col);
+    });
+    return initial;
+  });
+
+  const [resizingCol, setResizingCol] = useState<string | null>(null);
+  const resizeRef = useRef<{
+    key: string;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
+
+  // Sync columns when props change
+  useEffect(() => {
+    setColumnWidths((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      columns.forEach((col) => {
+        if (!next[col.key]) {
+          next[col.key] = getDefaultWidth(col);
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+  }, [columns]);
+
+  const startResize = useCallback((key: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const currentWidth = columnWidths[key] ?? 140;
+    resizeRef.current = {
+      key,
+      startX: e.clientX,
+      startWidth: currentWidth,
+    };
+    setResizingCol(key);
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      if (!resizeRef.current) return;
+      const deltaX = moveEvent.clientX - resizeRef.current.startX;
+      const newWidth = Math.max(65, resizeRef.current.startWidth + deltaX);
+      setColumnWidths((prev) => ({
+        ...prev,
+        [resizeRef.current!.key]: newWidth,
+      }));
+    };
+
+    const onMouseUp = () => {
+      resizeRef.current = null;
+      setResizingCol(null);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      document.body.style.removeProperty("cursor");
+      document.body.style.removeProperty("user-select");
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, [columnWidths]);
+
+  function resetColumnWidth(key: string) {
+    const col = columns.find((c) => c.key === key);
+    if (!col) return;
+    setColumnWidths((prev) => ({
+      ...prev,
+      [key]: getDefaultWidth(col),
+    }));
+  }
+
+  const hasCustomWidths = useMemo(() => {
+    return columns.some((col) => columnWidths[col.key] && columnWidths[col.key] !== getDefaultWidth(col));
+  }, [columns, columnWidths]);
+
+  function resetAllWidths() {
+    const initial: Record<string, number> = {};
+    columns.forEach((col) => {
+      initial[col.key] = getDefaultWidth(col);
+    });
+    setColumnWidths(initial);
+  }
 
   // Reset to first page whenever dataset, search query, or page size changes
   useEffect(() => {
@@ -222,9 +322,22 @@ export function OperationsTable({
           </div>
         </div>
 
-        {/* Right: Actions + Page Size Selector */}
-        <div className="flex items-center gap-3">
+        {/* Right: Actions + Reset Widths + Page Size Selector */}
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {actions}
+          {hasCustomWidths && (
+            <button
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#c6d7d0] bg-white px-2.5 py-1 text-xs font-semibold text-[#59756f] transition hover:border-[#2e6b61] hover:text-[#183a32]"
+              onClick={resetAllWidths}
+              title="Restablecer anchos originales de las columnas"
+              type="button"
+            >
+              <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+              </svg>
+              <span>Restablecer anchos</span>
+            </button>
+          )}
           <div className="inline-flex items-center gap-1.5 text-xs text-[#59756f]">
             <span>Mostrar</span>
             <select
@@ -244,9 +357,9 @@ export function OperationsTable({
         </div>
       </div>
 
-      {/* Table Content */}
+      {/* Table Content with Col Resize */}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[700px] text-left text-xs">
+        <table className="w-full table-fixed text-left text-xs" style={{ width: "max-content", minWidth: "100%" }}>
           <thead className="sticky top-0 z-10 border-b border-[#dce5e1] bg-[#f4f8f6] font-semibold uppercase tracking-wider text-[#49655f]">
             <tr>
               {columns.map((column) => {
@@ -260,14 +373,24 @@ export function OperationsTable({
                     ? "text-center"
                     : "text-left";
                 const isSorted = sortKey === column.key;
+                const colWidth = columnWidths[column.key] ?? getDefaultWidth(column);
+                const isResizing = resizingCol === column.key;
+
                 return (
                   <th
-                    className={`px-3.5 py-3 whitespace-nowrap cursor-pointer select-none transition hover:bg-[#eaf1ed] ${alignClass}`}
+                    className={`group relative px-3.5 py-3 whitespace-nowrap cursor-pointer select-none transition hover:bg-[#eaf1ed] ${alignClass} ${
+                      isResizing ? "bg-[#e2ede8]" : ""
+                    }`}
                     key={column.key}
                     onClick={() => handleSort(column.key)}
+                    style={{
+                      width: `${colWidth}px`,
+                      minWidth: `${colWidth}px`,
+                      maxWidth: `${colWidth}px`,
+                    }}
                   >
                     <div
-                      className={`inline-flex items-center gap-1.5 ${
+                      className={`inline-flex items-center gap-1.5 w-full overflow-hidden ${
                         alignClass === "text-right"
                           ? "justify-end"
                           : alignClass === "text-center"
@@ -275,8 +398,8 @@ export function OperationsTable({
                           : "justify-start"
                       }`}
                     >
-                      <span>{column.label}</span>
-                      <span className="inline-flex text-[#839b94]">
+                      <span className="truncate">{column.label}</span>
+                      <span className="inline-flex shrink-0 text-[#839b94]">
                         {isSorted ? (
                           sortOrder === "asc" ? (
                             <svg className="h-3 w-3 text-[#2e6b61]" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
@@ -293,6 +416,28 @@ export function OperationsTable({
                           </svg>
                         )}
                       </span>
+                    </div>
+
+                    {/* Drag resize handle */}
+                    <div
+                      aria-label={`Ajustar ancho de columna ${column.label}`}
+                      className={`absolute right-0 top-0 bottom-0 z-20 flex w-2.5 cursor-col-resize items-center justify-center transition-colors hover:bg-[#2e6b61]/20 ${
+                        isResizing ? "bg-[#2e6b61]/30" : ""
+                      }`}
+                      onClick={(e) => e.stopPropagation()}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        resetColumnWidth(column.key);
+                      }}
+                      onMouseDown={(e) => startResize(column.key, e)}
+                      role="separator"
+                      title="Arrastrar para ajustar ancho (doble clic para restablecer)"
+                    >
+                      <span
+                        className={`h-4 w-[2px] rounded-full transition-colors ${
+                          isResizing ? "bg-[#2e6b61]" : "bg-[#c6d7d0] group-hover:bg-[#2e6b61]"
+                        }`}
+                      />
                     </div>
                   </th>
                 );
@@ -339,10 +484,16 @@ export function OperationsTable({
                         : column.align === "center" || column.format === "status"
                         ? "text-center"
                         : "text-left";
+                    const colWidth = columnWidths[column.key] ?? getDefaultWidth(column);
                     return (
                       <td
-                        className={`px-3.5 py-2.5 align-middle text-[#1a332d] ${alignClass}`}
+                        className={`px-3.5 py-2.5 align-middle text-[#1a332d] truncate ${alignClass}`}
                         key={column.key}
+                        style={{
+                          width: `${colWidth}px`,
+                          minWidth: `${colWidth}px`,
+                          maxWidth: `${colWidth}px`,
+                        }}
                       >
                         {column.render
                           ? column.render(item, item[column.key])
