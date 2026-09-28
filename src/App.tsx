@@ -480,22 +480,22 @@ export function App() {
   }
 
   return (
-    <main className="min-h-[100dvh] bg-[#f4f7f6] text-[#10242b]">
-      <div className="grid min-h-[100dvh] lg:grid-cols-[260px_minmax(0,1fr)]">
+    <main className="min-h-[100dvh] bg-[#f4f7f6] text-[#10242b] lg:h-screen lg:overflow-hidden">
+      <div className="grid min-h-[100dvh] lg:h-full lg:grid-cols-[260px_minmax(0,1fr)]">
         {/* Sidebar */}
-        <aside className="border-b border-[#203c44] bg-[#0d252d] text-[#e8f0ed] lg:border-r lg:border-b-0 flex flex-col justify-between">
-          <div>
-            <div className="border-b border-[#1b3a43] px-5 pt-6 pb-5">
+        <aside className="border-b border-[#203c44] bg-[#0d252d] text-[#e8f0ed] lg:border-r lg:border-b-0 flex flex-col justify-between lg:h-full lg:sticky lg:top-0 lg:overflow-y-auto shrink-0">
+          <div className="flex flex-col flex-1 min-h-0">
+            <div className="border-b border-[#1b3a43] px-5 pt-6 pb-5 shrink-0">
               <p className="text-xs font-bold tracking-[0.2em] text-[#a9c4ba]">MINANTAYA</p>
               <h1 className="mt-1 text-sm font-semibold text-white leading-tight">Control Operativo</h1>
             </div>
 
-            <nav className="flex flex-col">
+            <nav className="flex flex-col overflow-y-auto">
               {sections.map(([name]) => {
                 const isActive = section === name;
                 return (
                   <button
-                    className={`inline-flex w-full items-center gap-3 px-5 py-3 text-left text-xs transition rounded-none leading-none ${
+                    className={`inline-flex w-full items-center gap-3 px-5 py-3 text-left text-xs transition rounded-none leading-none shrink-0 ${
                       isActive
                         ? "bg-[#e6f0c9] text-[#17333a] font-bold"
                         : "text-[#c8d8d2] hover:bg-[#14323a] hover:text-white font-medium"
@@ -519,7 +519,7 @@ export function App() {
             </nav>
           </div>
 
-          <div className="border-t border-[#203c44] p-5">
+          <div className="border-t border-[#203c44] p-5 shrink-0">
             <div className="flex items-center justify-between text-xs text-[#a9c4ba]">
               <div>
                 <span className="block text-[10px] uppercase text-[#73948a]">Sesión Activa</span>
@@ -537,7 +537,7 @@ export function App() {
         </aside>
 
         {/* Main Content Area */}
-        <section className="px-4 py-6 sm:px-8 lg:px-10 overflow-y-auto">
+        <section className="px-4 py-6 sm:px-8 lg:px-10 overflow-y-auto lg:h-full">
           <div className="mx-auto max-w-[1550px]">
             {/* Header */}
             <header className="flex flex-wrap items-center justify-between gap-4 border-b border-[#dce5e1] pb-5">
