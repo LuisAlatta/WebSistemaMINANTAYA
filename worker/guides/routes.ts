@@ -15,6 +15,8 @@ import {
   replaceLotSuppliers,
   requestLotWithdrawal,
   withdrawalSchema,
+  addLotsSchema,
+  addLotsToGuide,
 } from './service';
 
 export const guideRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>();
@@ -56,6 +58,23 @@ guideRoutes.patch('/:id/status', async (context) => {
     parsed.data,
   );
   return context.json(guide);
+});
+
+guideRoutes.post('/:id/lots', async (context) => {
+  const payload = await context.req.json().catch(() => {
+    throw new HttpError(400, 'El cuerpo debe ser JSON válido.', 'INVALID_JSON');
+  });
+  const parsed = addLotsSchema.safeParse(payload);
+  if (!parsed.success) {
+    return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
+  }
+  const result = await addLotsToGuide(
+    context.env.DB,
+    context.get('actor'),
+    context.req.param('id'),
+    parsed.data.codes,
+  );
+  return context.json(result, 201);
 });
 
 guideRoutes.post('/:id/lots/:guideLotId/withdrawal', async (context) => {

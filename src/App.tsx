@@ -245,7 +245,16 @@ export function App() {
   } | null>(null);
 
   const [showGuideForm, setShowGuideForm] = useState(false);
-  const [guides, setGuides] = useState<Array<{ id: string; gre: string }>>([]);
+  const [guides, setGuides] = useState<
+    Array<{
+      id: string;
+      gre: string;
+      status?: string;
+      lotCount?: number;
+      plant?: string;
+      carrier?: string;
+    }>
+  >([]);
   const [counterparties, setCounterparties] = useState<
     Array<{ id: string; legalName: string; type: string }>
   >([]);
@@ -297,7 +306,16 @@ export function App() {
   useEffect(() => {
     if (!username) return;
     void Promise.all([
-      getJson<{ items: Array<{ id: string; gre: string }> }>("/api/operations/guides?limit=300"),
+      getJson<{
+        items: Array<{
+          id: string;
+          gre: string;
+          status?: string;
+          lotCount?: number;
+          plant?: string;
+          carrier?: string;
+        }>;
+      }>("/api/operations/guides?limit=300"),
       getJson<{ items: Array<{ id: string; legalName: string; type: string }> }>("/api/counterparties"),
     ])
       .then(([guideResult, counterpartiesResult]) => {

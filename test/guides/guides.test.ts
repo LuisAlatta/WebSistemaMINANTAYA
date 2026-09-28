@@ -137,4 +137,21 @@ describe('guides API', () => {
     await expect(env.DB.prepare('SELECT status FROM lots WHERE id = (SELECT lot_id FROM guide_lots WHERE id = ?)').bind(link?.id).first()).resolves.toMatchObject({ status: 'RETIRADO' });
     await expect(env.DB.prepare("SELECT action FROM audit_logs WHERE entity_type = 'guide_lot' AND action = 'WITHDRAWAL_CONFIRMED'").first()).resolves.toMatchObject({ action: 'WITHDRAWAL_CONFIRMED' });
   });
+
+  it('adds lots to an existing guide via POST /api/guides/:id/lots', async () => {
+    const created = await worker.fetch(new Request('https://app.test/api/guides', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' },
+      body: JSON.stringify({ gre: 'EG07-379-TEST', issuedAt: '2026-09-18T00:00:00.000Z', lots: [{ code: 'L-INI' }] }),
+    }), env, createExecutionContext());
+    const guide = (await created.json()) as { id: string };
+
+    const response = await worker.fetch(new Request(`https://app.test/api/guides/${guide.id}/lots`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-dev-actor': 'admin@test.pe' },
+      body: JSON.stringify({ codes: ['PPO 68300', 'PPO 68301'] }),
+    }), env, createExecutionContext());
+    expect(response.status).toBe(201);
+    const data = (await response.json()) as { lots: Array<{ code: string }> };
+    expect(data.lots).toHaveLength(2);
+    expect(data.lots.map((l) => l.code)).toContain('PPO-68300');
+  });
 });

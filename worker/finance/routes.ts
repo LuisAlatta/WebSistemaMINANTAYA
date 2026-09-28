@@ -52,8 +52,8 @@ financeRoutes.post('/commercial-invoices', async (context) => {
   if (!parsed.success) return context.json({ error: 'VALIDATION_ERROR', issues: parsed.error.issues }, 400);
   const input = parsed.data;
   const placeholders = input.lotIds.map(() => '?').join(', ');
-  const lots = await context.env.DB.prepare(`SELECT lots.id FROM lots JOIN guide_lots ON guide_lots.lot_id = lots.id JOIN guides ON guides.id = guide_lots.guide_id WHERE lots.id IN (${placeholders}) AND lots.status = 'ACTIVO' AND guides.status = 'LIQUIDADA'`).bind(...input.lotIds).all<{ id: string }>();
-  if (lots.results.length !== input.lotIds.length) throw new HttpError(400, 'Los lotes deben existir, estar activos y pertenecer a guías liquidadas.', 'LOT_NOT_READY_FOR_INVOICE');
+  const lots = await context.env.DB.prepare(`SELECT lots.id FROM lots JOIN guide_lots ON guide_lots.lot_id = lots.id JOIN guides ON guides.id = guide_lots.guide_id WHERE lots.id IN (${placeholders}) AND lots.status = 'ACTIVO' AND guides.status <> 'ANULADA'`).bind(...input.lotIds).all<{ id: string }>();
+  if (lots.results.length !== input.lotIds.length) throw new HttpError(400, 'Los lotes deben existir, estar activos y pertenecer a guías vigentes.', 'LOT_NOT_READY_FOR_INVOICE');
   const used = await context.env.DB.prepare(`SELECT lot_id FROM commercial_invoice_lots WHERE lot_id IN (${placeholders})`).bind(...input.lotIds).all();
   if (used.results.length) throw new HttpError(409, 'Uno o más lotes ya fueron facturados.', 'LOT_ALREADY_INVOICED');
   const id = crypto.randomUUID(); const now = new Date().toISOString(); const actor = context.get('actor');
@@ -61,6 +61,7 @@ financeRoutes.post('/commercial-invoices', async (context) => {
   const statements: D1PreparedStatement[] = [
     context.env.DB.prepare('INSERT INTO commercial_invoices (id, invoice_number, issued_at, amount_usd_cents, detraction_percent, detraction_pen_cents, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, input.invoiceNumber, input.issuedAt, input.amountUsdCents, input.detractionPercent, input.detractionPenCents, 'EMITIDA', now, now),
     prepareAuditLog({ db: context.env.DB, actor, action: 'CREATED', entityType: 'commercial_invoice', entityId: id, after, occurredAt: now }),
+    context.env.DB.prepare(`UPDATE guides SET status = 'FACTURADA', updated_at = ? WHERE id IN (SELECT DISTINCT guide_id FROM guide_lots WHERE lot_id IN (${placeholders}))`).bind(now, ...input.lotIds),
   ];
   for (const lotId of input.lotIds) {
     const linkId = crypto.randomUUID();

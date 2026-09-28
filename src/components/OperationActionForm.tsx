@@ -2,7 +2,14 @@ import { FormEvent, useEffect, useState } from "react";
 
 import { getJson, sendJson, type ApiRow } from "../lib/api";
 
-type GuideOption = { id: string; gre: string };
+type GuideOption = {
+  id: string;
+  gre: string;
+  status?: string;
+  lotCount?: number;
+  plant?: string;
+  carrier?: string;
+};
 type Counterparty = { id: string; legalName: string; type: string };
 type Action =
   | "status"
@@ -59,6 +66,204 @@ function isoDate(value: FormDataEntryValue | null) {
   return new Date(`${String(value)}T12:00:00.000Z`).toISOString();
 }
 
+function LotSelectorCards({
+  lots,
+  selectedLotIds,
+  onToggleLot,
+  onSelectAll,
+  onClear,
+  loadingLots,
+  selectedGuide,
+  newLotCodesInput,
+  setNewLotCodesInput,
+  creatingLots,
+  onAssignLots,
+  label = "Lotes (máximo 4)",
+  subtitle = "Selecciona con un clic los lotes que corresponden a este movimiento",
+}: {
+  lots: ApiRow[];
+  selectedLotIds: string[];
+  onToggleLot: (id: string) => void;
+  onSelectAll: () => void;
+  onClear: () => void;
+  loadingLots: boolean;
+  selectedGuide?: GuideOption;
+  newLotCodesInput: string;
+  setNewLotCodesInput: (val: string) => void;
+  creatingLots: boolean;
+  onAssignLots: () => void;
+  label?: string;
+  subtitle?: string;
+}) {
+  return (
+    <div className="sm:col-span-2 space-y-2.5 rounded-xl border border-[#d6e3de] bg-[#f9fcfa] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <label className="text-xs font-bold uppercase tracking-wider text-[#2e6b61]">
+            {label}
+          </label>
+          <p className="text-[11px] text-[#59756f] mt-0.5">{subtitle}</p>
+        </div>
+        {lots.length > 0 && (
+          <div className="flex items-center gap-2 text-xs">
+            <span
+              className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                selectedLotIds.length > 0
+                  ? "bg-[#e6f0c9] text-[#17333a]"
+                  : "bg-slate-100 text-slate-600"
+              }`}
+            >
+              {selectedLotIds.length} de 4 seleccionados
+            </span>
+            {selectedLotIds.length < Math.min(lots.length, 4) && (
+              <button
+                className="text-[11px] font-semibold text-[#2e6b61] hover:underline"
+                onClick={onSelectAll}
+                type="button"
+              >
+                Seleccionar todos
+              </button>
+            )}
+            {selectedLotIds.length > 0 && (
+              <button
+                className="text-[11px] font-semibold text-rose-600 hover:underline"
+                onClick={onClear}
+                type="button"
+              >
+                Limpiar
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {loadingLots ? (
+        <div className="flex items-center justify-center gap-2 rounded-lg border border-[#e5eee9] bg-white p-6 text-xs text-[#59756f]">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-[#2e6b61] border-t-transparent" />
+          <span>Consultando lotes de la guía…</span>
+        </div>
+      ) : lots.length > 0 ? (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {lots.map((lot) => {
+            const lotId = String(lot.lotId || lot.id);
+            const isSelected = selectedLotIds.includes(lotId);
+            const isAlreadyInvoiced = Boolean(
+              lot.alreadyInvoiced ||
+                String(lot.status ?? "").toUpperCase() === "FACTURADO" ||
+                String(lot.status ?? "").toUpperCase() === "RETIRADO",
+            );
+
+            return (
+              <div
+                className={`flex items-start gap-3 rounded-lg border p-3 transition select-none cursor-pointer ${
+                  isSelected
+                    ? "border-[#2e6b61] bg-[#f0f8f5] shadow-xs ring-1 ring-[#2e6b61]"
+                    : isAlreadyInvoiced
+                    ? "border-[#e2e8e5] bg-[#f5f7f6] opacity-60 cursor-not-allowed"
+                    : "border-[#dce5e1] bg-white hover:border-[#a3c4ba] hover:bg-[#fafcfb]"
+                }`}
+                key={lotId}
+                onClick={() => {
+                  if (isAlreadyInvoiced) return;
+                  onToggleLot(lotId);
+                }}
+              >
+                <input
+                  checked={isSelected}
+                  className="mt-0.5 h-4 w-4 rounded border-[#b9cbc4] text-[#2e6b61] focus:ring-[#2e6b61]"
+                  disabled={isAlreadyInvoiced}
+                  onChange={() => {
+                    if (isAlreadyInvoiced) return;
+                    onToggleLot(lotId);
+                  }}
+                  type="checkbox"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-xs font-bold text-[#10242b] truncate">
+                      {String(lot.code)}
+                    </span>
+                    {Boolean(lot.status) && (
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                          String(lot.status) === "ACTIVO"
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-slate-100 text-slate-600"
+                        }`}
+                      >
+                        {String(lot.status)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-[#59756f]">
+                    {lot.sackCount ? <span>📦 {String(lot.sackCount)} sacos</span> : null}
+                    {lot.suppliers ? (
+                      <span className="truncate">👤 {String(lot.suppliers)}</span>
+                    ) : null}
+                    {isAlreadyInvoiced && (
+                      <span className="font-semibold text-amber-700">⚠️ Ya facturado/retirado</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        /* Empty state when the selected guide has no lots */
+        <div className="rounded-xl border border-amber-300 bg-amber-50/80 p-4 text-xs">
+          <div className="flex items-start gap-3">
+            <svg
+              className="h-5 w-5 shrink-0 text-amber-600 mt-0.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"
+              />
+            </svg>
+            <div className="flex-1">
+              <p className="font-bold text-amber-900">
+                La guía {selectedGuide?.gre ?? "seleccionada"} no tiene lotes registrados en el sistema
+              </p>
+              <p className="mt-1 text-[11px] text-amber-800 leading-relaxed">
+                Ingresa a continuación los códigos de lote de esta guía (máximo 4) separados por coma para crearlos y asociarlos de inmediato a este movimiento:
+              </p>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <input
+                  className="flex-1 min-w-[200px] rounded-lg border border-[#b9cbc4] bg-white px-3 py-1.5 text-xs text-[#10242b] outline-none transition focus:border-[#2e6b61] focus:ring-1 focus:ring-[#2e6b61]"
+                  onChange={(e) => setNewLotCodesInput(e.target.value)}
+                  placeholder="Ej: PPO 68300, PPO 68301"
+                  type="text"
+                  value={newLotCodesInput}
+                />
+                <button
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#2e6b61] px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs transition hover:bg-[#25574f] disabled:opacity-50 leading-none shrink-0"
+                  disabled={creatingLots || !newLotCodesInput.trim()}
+                  onClick={onAssignLots}
+                  type="button"
+                >
+                  {creatingLots ? "Asignando…" : "+ Asignar a Guía"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden inputs to feed standard form submit */}
+      {selectedLotIds.map((id) => (
+        <input key={id} name="lotId" type="hidden" value={id} />
+      ))}
+    </div>
+  );
+}
+
 export function OperationActionForm({
   guides,
   counterparties,
@@ -71,6 +276,11 @@ export function OperationActionForm({
   const [action, setAction] = useState<Action>("status");
   const [guideId, setGuideId] = useState("");
   const [lots, setLots] = useState<ApiRow[]>([]);
+  const [loadingLots, setLoadingLots] = useState(false);
+  const [selectedLotIds, setSelectedLotIds] = useState<string[]>([]);
+  const [newLotCodesInput, setNewLotCodesInput] = useState("");
+  const [creatingLots, setCreatingLots] = useState(false);
+  const [selectedTransportGuideIds, setSelectedTransportGuideIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [paymentTarget, setPaymentTarget] = useState<
@@ -78,15 +288,90 @@ export function OperationActionForm({
   >("COMERCIAL");
   const [invoices, setInvoices] = useState<ApiRow[]>([]);
 
+  const selectedGuide = guides.find((g) => g.id === guideId);
+
   useEffect(() => {
+    setSelectedLotIds([]);
+    setNewLotCodesInput("");
     if (!guideId) {
       setLots([]);
+      setLoadingLots(false);
       return;
     }
+    setLoadingLots(true);
     void getJson<{ lots: ApiRow[] }>(`/api/operations/guides/${guideId}`)
-      .then((detail) => setLots(detail.lots))
-      .catch(() => setLots([]));
+      .then((detail) => {
+        setLots(detail.lots);
+        const available = detail.lots
+          .filter(
+            (l) =>
+              !l.alreadyInvoiced &&
+              String(l.status ?? "").toUpperCase() !== "FACTURADO" &&
+              String(l.status ?? "").toUpperCase() !== "RETIRADO",
+          )
+          .map((l) => String(l.lotId || l.id))
+          .slice(0, 4);
+        setSelectedLotIds(available);
+      })
+      .catch(() => setLots([]))
+      .finally(() => setLoadingLots(false));
   }, [guideId]);
+
+  const toggleLot = (lotId: string) => {
+    setSelectedLotIds((prev) => {
+      if (prev.includes(lotId)) {
+        return prev.filter((id) => id !== lotId);
+      }
+      if (prev.length >= 4) {
+        return prev;
+      }
+      return [...prev, lotId];
+    });
+  };
+
+  const selectAllAvailableLots = () => {
+    const available = lots
+      .filter(
+        (l) =>
+          !l.alreadyInvoiced &&
+          String(l.status ?? "").toUpperCase() !== "FACTURADO" &&
+          String(l.status ?? "").toUpperCase() !== "RETIRADO",
+      )
+      .map((l) => String(l.lotId || l.id))
+      .slice(0, 4);
+    setSelectedLotIds(available);
+  };
+
+  const handleCreateAndAssignLots = async () => {
+    if (!guideId || !newLotCodesInput.trim()) return;
+    setCreatingLots(true);
+    setMessage(null);
+    try {
+      const codes = newLotCodesInput
+        .split(/[\n,;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (codes.length === 0) return;
+
+      const res = await sendJson<{ lots: Array<{ lotId: string; code: string }> }>(
+        `/api/guides/${guideId}/lots`,
+        "POST",
+        { codes },
+      );
+
+      const detail = await getJson<{ lots: ApiRow[] }>(`/api/operations/guides/${guideId}`);
+      setLots(detail.lots);
+      const newIds = res.lots.map((l) => l.lotId).slice(0, 4);
+      setSelectedLotIds(newIds);
+      setNewLotCodesInput("");
+      setMessage(`Se asignaron ${res.lots.length} lotes correctamente a la guía.`);
+    } catch (err) {
+      setMessage(err instanceof Error ? `Error: ${err.message}` : "No se pudieron crear los lotes.");
+    } finally {
+      setCreatingLots(false);
+    }
+  };
+
   useEffect(() => {
     if (action !== "payment") return;
     const path =
@@ -211,24 +496,52 @@ export function OperationActionForm({
           amountUsdCents: toCents(form.get("amountUsd")),
           reason: form.get("reason"),
         });
-      if (action === "commercialInvoice")
+      if (action === "commercialInvoice") {
+        let lotIdsToUse = [...selectedLotIds];
+        if (lotIdsToUse.length === 0 && newLotCodesInput.trim() && guideId) {
+          const codes = newLotCodesInput
+            .split(/[\n,;]+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (codes.length > 0) {
+            const res = await sendJson<{ lots: Array<{ lotId: string; code: string }> }>(
+              `/api/guides/${guideId}/lots`,
+              "POST",
+              { codes },
+            );
+            lotIdsToUse = res.lots.map((l) => l.lotId).slice(0, 4);
+          }
+        }
+        if (lotIdsToUse.length === 0) {
+          throw new Error("Debes seleccionar al menos un lote o ingresar sus códigos en la casilla de lotes.");
+        }
+
         await sendJson("/api/commercial-invoices", "POST", {
           invoiceNumber: form.get("invoiceNumber"),
           issuedAt: isoDate(form.get("issuedAt")),
           amountUsdCents: toCents(form.get("amountUsd")),
           detractionPercent: Number(form.get("detractionPercent")) / 100,
           detractionPenCents: toCents(form.get("detractionPen")),
-          lotIds: form.getAll("lotId").map(String),
+          lotIds: lotIdsToUse,
         });
-      if (action === "transportInvoice")
+      }
+      if (action === "transportInvoice") {
+        const guideIdsToUse =
+          selectedTransportGuideIds.length > 0
+            ? selectedTransportGuideIds
+            : form.getAll("transportGuideId").map(String);
+        if (guideIdsToUse.length === 0) {
+          throw new Error("Debes seleccionar al menos una guía cubierta para la factura de transporte.");
+        }
         await sendJson("/api/transport-invoices", "POST", {
           carrierId: form.get("carrierId"),
           invoiceNumber: form.get("invoiceNumber"),
           issuedAt: isoDate(form.get("issuedAt")),
           amountUsdCents: toCents(form.get("amountUsd")),
           detractionPenCents: toCents(form.get("detractionPen")),
-          guideIds: form.getAll("transportGuideId").map(String),
+          guideIds: guideIdsToUse,
         });
+      }
       if (action === "payment")
         await sendJson("/api/payments", "POST", {
           paymentType: paymentTarget,
@@ -327,22 +640,59 @@ export function OperationActionForm({
       )}
       <form className="mt-5 grid gap-4 sm:grid-cols-2" onSubmit={submit}>
         {needsGuide && (
-          <label className="grid gap-1 text-sm font-medium sm:col-span-2">
-            Guía
-            <select
-              className="rounded border border-[#b9cbc4] px-3 py-2"
-              required
-              value={guideId}
-              onChange={(event) => setGuideId(event.target.value)}
-            >
-              <option value="">Selecciona una guía</option>
-              {guides.map((guide) => (
-                <option key={guide.id} value={guide.id}>
-                  {guide.gre}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="grid gap-2 sm:col-span-2">
+            <label className="grid gap-1 text-sm font-medium">
+              Guía
+              <select
+                className="rounded border border-[#b9cbc4] px-3 py-2 text-xs sm:text-sm"
+                onChange={(event) => setGuideId(event.target.value)}
+                required
+                value={guideId}
+              >
+                <option value="">Selecciona una guía</option>
+                {guides.map((guide) => {
+                  const statusTag = guide.status ? `[${guide.status}]` : "";
+                  const lotsTag =
+                    guide.lotCount !== undefined
+                      ? `(${guide.lotCount} ${guide.lotCount === 1 ? "lote" : "lotes"})`
+                      : "";
+                  const plantTag = guide.plant ? `· ${guide.plant}` : "";
+                  return (
+                    <option key={guide.id} value={guide.id}>
+                      {guide.gre} {statusTag} {lotsTag} {plantTag}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+
+            {selectedGuide && (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-[#cbe0d8] bg-[#f2f8f5] px-3 py-2 text-xs text-[#183a32]">
+                <span className="font-semibold">Guía: {selectedGuide.gre}</span>
+                <span
+                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    selectedGuide.status === "LIQUIDADA"
+                      ? "bg-emerald-100 text-emerald-800"
+                      : selectedGuide.status === "FACTURADA"
+                      ? "bg-blue-100 text-blue-800"
+                      : selectedGuide.status === "EMITIDA"
+                      ? "bg-amber-100 text-amber-800"
+                      : "bg-slate-100 text-slate-700"
+                  }`}
+                >
+                  {selectedGuide.status ?? "EMITIDA"}
+                </span>
+                {selectedGuide.plant && (
+                  <span className="text-[#59756f]">
+                    Planta: <strong className="text-[#10242b]">{selectedGuide.plant}</strong>
+                  </span>
+                )}
+                <span className="text-[#59756f]">
+                  Lotes registrados: <strong className="text-[#10242b]">{lots.length}</strong>
+                </span>
+              </div>
+            )}
+          </div>
         )}
         {action === "status" && (
           <>
@@ -494,21 +844,21 @@ export function OperationActionForm({
                 />
               </div>
             </label>
-            <label className="grid gap-1 text-sm font-medium sm:col-span-2">
-              Lotes del reporte
-              <select
-                className="min-h-24 rounded border border-[#b9cbc4] px-3 py-2"
-                multiple
-                name="lotId"
-                required
-              >
-                {lots.map((lot) => (
-                  <option key={String(lot.lotId)} value={String(lot.lotId)}>
-                    {String(lot.code)}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <LotSelectorCards
+              creatingLots={creatingLots}
+              label="Lotes del reporte (máximo 4)"
+              loadingLots={loadingLots}
+              lots={lots}
+              newLotCodesInput={newLotCodesInput}
+              onAssignLots={handleCreateAndAssignLots}
+              onClear={() => setSelectedLotIds([])}
+              onSelectAll={selectAllAvailableLots}
+              onToggleLot={toggleLot}
+              selectedGuide={selectedGuide}
+              selectedLotIds={selectedLotIds}
+              setNewLotCodesInput={setNewLotCodesInput}
+              subtitle="Selecciona con un clic los lotes a los que aplica este reporte de leyes"
+            />
           </>
         )}
         {action === "lawsProgress" && (
@@ -877,21 +1227,21 @@ export function OperationActionForm({
                 type="number"
               />
             </label>
-            <label className="grid gap-1 text-sm font-medium sm:col-span-2">
-              Lotes (máximo 4)
-              <select
-                className="min-h-24 rounded border border-[#b9cbc4] px-3 py-2"
-                multiple
-                name="lotId"
-                required
-              >
-                {lots.map((lot) => (
-                  <option key={String(lot.lotId)} value={String(lot.lotId)}>
-                    {String(lot.code)}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <LotSelectorCards
+              creatingLots={creatingLots}
+              label="Lotes a facturar (máximo 4)"
+              loadingLots={loadingLots}
+              lots={lots}
+              newLotCodesInput={newLotCodesInput}
+              onAssignLots={handleCreateAndAssignLots}
+              onClear={() => setSelectedLotIds([])}
+              onSelectAll={selectAllAvailableLots}
+              onToggleLot={toggleLot}
+              selectedGuide={selectedGuide}
+              selectedLotIds={selectedLotIds}
+              setNewLotCodesInput={setNewLotCodesInput}
+              subtitle="Selecciona con un clic los lotes que cubre esta factura comercial"
+            />
           </>
         )}
         {action === "transportInvoice" && (
@@ -954,21 +1304,80 @@ export function OperationActionForm({
                 type="number"
               />
             </label>
-            <label className="grid gap-1 text-sm font-medium sm:col-span-2">
-              Guías cubiertas
-              <select
-                className="min-h-24 rounded border border-[#b9cbc4] px-3 py-2"
-                multiple
-                name="transportGuideId"
-                required
-              >
-                {guides.map((guide) => (
-                  <option key={guide.id} value={guide.id}>
-                    {guide.gre}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="sm:col-span-2 space-y-2 rounded-xl border border-[#d6e3de] bg-[#f9fcfa] p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wider text-[#2e6b61]">
+                    Guías cubiertas
+                  </label>
+                  <p className="text-[11px] text-[#59756f] mt-0.5">
+                    Selecciona con un clic las guías amparadas por esta factura de transporte
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                      selectedTransportGuideIds.length > 0
+                        ? "bg-[#e6f0c9] text-[#17333a]"
+                        : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
+                    {selectedTransportGuideIds.length} seleccionadas
+                  </span>
+                  {selectedTransportGuideIds.length > 0 && (
+                    <button
+                      className="text-[11px] font-semibold text-rose-600 hover:underline"
+                      onClick={() => setSelectedTransportGuideIds([])}
+                      type="button"
+                    >
+                      Limpiar
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="max-h-48 overflow-y-auto rounded-lg border border-[#c6d7d0] bg-white divide-y divide-[#edf2ef]">
+                {guides.map((guide) => {
+                  const isSelected = selectedTransportGuideIds.includes(guide.id);
+                  return (
+                    <label
+                      className={`flex items-center gap-2.5 p-2.5 text-xs transition cursor-pointer select-none ${
+                        isSelected
+                          ? "bg-[#f0f8f5] text-[#183a32] font-semibold"
+                          : "hover:bg-[#fafcfb] text-[#10242b]"
+                      }`}
+                      key={guide.id}
+                    >
+                      <input
+                        checked={isSelected}
+                        className="h-4 w-4 rounded border-[#b9cbc4] text-[#2e6b61] focus:ring-[#2e6b61]"
+                        onChange={() => {
+                          setSelectedTransportGuideIds((prev) =>
+                            prev.includes(guide.id)
+                              ? prev.filter((id) => id !== guide.id)
+                              : [...prev, guide.id],
+                          );
+                        }}
+                        type="checkbox"
+                      />
+                      <span className="font-mono font-medium">{guide.gre}</span>
+                      {guide.plant && (
+                        <span className="text-[10px] text-[#59756f]">({guide.plant})</span>
+                      )}
+                      {guide.status && (
+                        <span className="ml-auto rounded bg-slate-100 px-1.5 py-0.5 text-[9px] uppercase text-slate-600">
+                          {guide.status}
+                        </span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+
+              {selectedTransportGuideIds.map((id) => (
+                <input key={id} name="transportGuideId" type="hidden" value={id} />
+              ))}
+            </div>
           </>
         )}
         {action === "payment" && (

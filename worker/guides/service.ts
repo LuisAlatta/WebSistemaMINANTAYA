@@ -398,3 +398,92 @@ export async function listGuides(db: D1Database): Promise<{
 
   return { items: result.results };
 }
+
+export const addLotsSchema = z.object({
+  codes: z.array(z.string().trim().min(1)).min(1).max(10),
+});
+
+export async function addLotsToGuide(
+  db: D1Database,
+  actor: Actor,
+  guideId: string,
+  codes: string[],
+): Promise<{ guideId: string; lots: Array<{ lotId: string; code: string }> }> {
+  const guide = await db
+    .prepare('SELECT id, gre_original, status FROM guides WHERE id = ?')
+    .bind(guideId)
+    .first<{ id: string; gre_original: string; status: string }>();
+  if (!guide) {
+    throw new HttpError(404, 'La guía no existe.', 'GUIDE_NOT_FOUND');
+  }
+
+  const maxSeqRow = await db
+    .prepare('SELECT COALESCE(MAX(sequence), 0) AS maxSeq FROM guide_lots WHERE guide_id = ?')
+    .bind(guideId)
+    .first<{ maxSeq: number }>();
+  let currentSeq = maxSeqRow?.maxSeq ?? 0;
+
+  const now = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [];
+  const resultingLots: Array<{ lotId: string; code: string }> = [];
+
+  for (const rawCode of codes) {
+    const code = normalizeLotCode(rawCode);
+    if (!code) continue;
+
+    const lot = await db
+      .prepare('SELECT id, code FROM lots WHERE code = ?')
+      .bind(code)
+      .first<{ id: string; code: string }>();
+
+    let lotId: string;
+    if (lot) {
+      lotId = lot.id;
+    } else {
+      lotId = crypto.randomUUID();
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO lots (id, code, mineral_type, sack_count, gross_weight_kg, net_weight_kg, status, created_at, updated_at)
+             VALUES (?, ?, null, null, null, null, 'ACTIVO', ?, ?)`,
+          )
+          .bind(lotId, code, now, now),
+        prepareAuditLog({
+          db,
+          actor,
+          action: 'CREATED',
+          entityType: 'lot',
+          entityId: lotId,
+          after: { id: lotId, code },
+          occurredAt: now,
+        }),
+      );
+    }
+
+    const existingGuideLot = await db
+      .prepare('SELECT id FROM guide_lots WHERE guide_id = ? AND lot_id = ?')
+      .bind(guideId, lotId)
+      .first<{ id: string }>();
+
+    if (!existingGuideLot) {
+      currentSeq++;
+      const guideLotId = crypto.randomUUID();
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO guide_lots (id, guide_id, lot_id, sequence, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(guideLotId, guideId, lotId, currentSeq, now, now),
+      );
+    }
+
+    resultingLots.push({ lotId, code });
+  }
+
+  if (statements.length > 0) {
+    await executeAtomically(db, statements);
+  }
+
+  return { guideId, lots: resultingLots };
+}
