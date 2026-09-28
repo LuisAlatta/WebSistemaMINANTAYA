@@ -2,7 +2,6 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { OperationsTable, Column, formatUsd, formatPen } from "./components/OperationsTable";
 import { OperationActionForm } from "./components/OperationActionForm";
-import { PageControls } from "./components/PageControls";
 import { MetricCard } from "./components/MetricCard";
 import { StatusBadge } from "./components/StatusBadge";
 import { OperationDetailModal, GuideDetailView } from "./components/OperationDetailModal";
@@ -251,7 +250,6 @@ export function App() {
     Array<{ id: string; legalName: string; type: string }>
   >([]);
   const [showActionPanel, setShowActionPanel] = useState(false);
-  const [pageOffset, setPageOffset] = useState(0);
 
   const endpoint = useMemo(
     () => sections.find(([name]) => name === section)?.[1] ?? "/api/dashboard",
@@ -270,7 +268,7 @@ export function App() {
       } else if (section === "Usuarios") {
         setUsers((await getJson<{ items: UserAccount[] }>("/api/auth/users")).items);
       } else {
-        setData(await getJson<ViewData>(`${endpoint}?limit=200&offset=${pageOffset}`));
+        setData(await getJson<ViewData>(`${endpoint}?limit=500&offset=0`));
       }
     } catch (value) {
       setError(value instanceof Error ? value.message : "No se pudo cargar esta sección.");
@@ -294,7 +292,7 @@ export function App() {
 
   useEffect(() => {
     void refresh();
-  }, [section, username, pageOffset]);
+  }, [section, username]);
 
   useEffect(() => {
     if (!username) return;
@@ -349,7 +347,6 @@ export function App() {
         lots,
       });
       setShowGuideForm(false);
-      setPageOffset(0);
       if (section === "Guías y lotes") await refresh();
       else setSection("Guías y lotes");
     } catch (value) {
@@ -505,7 +502,6 @@ export function App() {
                     }`}
                     key={name}
                     onClick={() => {
-                      setPageOffset(0);
                       setSearchQuery("");
                       setStatusFilter("TODOS");
                       setPlantFilter("TODOS");
@@ -1360,16 +1356,6 @@ export function App() {
                   items={users as unknown as ApiRow[]}
                 />
               </div>
-            )}
-
-            {/* Pagination Controls */}
-            {!["Inicio", "Usuarios"].includes(section) && (
-              <PageControls
-                count={records.length}
-                limit={200}
-                offset={pageOffset}
-                onChange={(newOffset) => setPageOffset(newOffset)}
-              />
             )}
           </div>
         </section>

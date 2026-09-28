@@ -12,7 +12,7 @@ function pageValue(value: string | undefined, fallback: number, maximum: number)
 }
 
 function limit(context: { req: { query(name: string): string | undefined } }): number {
-  return Math.max(pageValue(context.req.query('limit'), 100, 300), 1);
+  return Math.max(pageValue(context.req.query('limit'), 100, 1000), 1);
 }
 
 function offset(context: { req: { query(name: string): string | undefined } }): number {
