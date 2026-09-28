@@ -434,13 +434,10 @@ export function App() {
     return (
       <main className="grid min-h-[100dvh] place-items-center bg-[#f0f4f2] p-4 text-[#10242b]">
         <div className="w-full max-w-md rounded-2xl border border-[#cfdcd7] bg-white p-8 shadow-xl">
-          <div className="flex items-center gap-2">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#2e6b61] text-xs font-bold text-white">
-              M
-            </span>
+          <div>
             <p className="text-xs font-bold tracking-[0.2em] text-[#345c53]">MINANTAYA</p>
           </div>
-          <h1 className="mt-4 text-2xl font-bold text-[#10242b]">Sistema de Control Minero</h1>
+          <h1 className="mt-2 text-2xl font-bold text-[#10242b]">Sistema de Control Minero</h1>
           <p className="mt-1.5 text-xs text-[#59756f]">
             Acceso administrativo para trazabilidad de minerales, fletes y liquidaciones.
           </p>
@@ -489,27 +486,22 @@ export function App() {
     <main className="min-h-[100dvh] bg-[#f4f7f6] text-[#10242b]">
       <div className="grid min-h-[100dvh] lg:grid-cols-[260px_minmax(0,1fr)]">
         {/* Sidebar */}
-        <aside className="border-b border-[#203c44] bg-[#0d252d] p-5 text-[#e8f0ed] lg:border-r lg:border-b-0 flex flex-col justify-between">
+        <aside className="border-b border-[#203c44] bg-[#0d252d] text-[#e8f0ed] lg:border-r lg:border-b-0 flex flex-col justify-between">
           <div>
-            <div className="flex items-center gap-2.5">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#e6f0c9] text-xs font-extrabold text-[#17333a]">
-                M
-              </span>
-              <div>
-                <p className="text-xs font-bold tracking-[0.2em] text-[#a9c4ba]">MINANTAYA</p>
-                <h1 className="text-sm font-semibold text-white leading-tight">Control Operativo</h1>
-              </div>
+            <div className="border-b border-[#1b3a43] px-5 pt-6 pb-5">
+              <p className="text-xs font-bold tracking-[0.2em] text-[#a9c4ba]">MINANTAYA</p>
+              <h1 className="mt-1 text-sm font-semibold text-white leading-tight">Control Operativo</h1>
             </div>
 
-            <nav className="mt-7 space-y-1">
+            <nav className="flex flex-col">
               {sections.map(([name]) => {
                 const isActive = section === name;
                 return (
                   <button
-                    className={`inline-flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs font-medium transition ${
+                    className={`inline-flex w-full items-center gap-3 px-5 py-3 text-left text-xs transition rounded-none leading-none ${
                       isActive
-                        ? "bg-[#e6f0c9] text-[#17333a] font-bold shadow-xs"
-                        : "text-[#c8d8d2] hover:bg-[#183941] hover:text-white"
+                        ? "bg-[#e6f0c9] text-[#17333a] font-bold"
+                        : "text-[#c8d8d2] hover:bg-[#14323a] hover:text-white font-medium"
                     }`}
                     key={name}
                     onClick={() => {
@@ -521,24 +513,24 @@ export function App() {
                     }}
                     type="button"
                   >
-                    <span className={isActive ? "text-[#17333a]" : "text-[#7f9e95]"}>
+                    <span className={`inline-flex items-center justify-center shrink-0 ${isActive ? "text-[#17333a]" : "text-[#7f9e95]"}`}>
                       {renderNavIcon(name)}
                     </span>
-                    {name}
+                    <span className="truncate">{name}</span>
                   </button>
                 );
               })}
             </nav>
           </div>
 
-          <div className="mt-8 border-t border-[#203c44] pt-4">
+          <div className="border-t border-[#203c44] p-5">
             <div className="flex items-center justify-between text-xs text-[#a9c4ba]">
               <div>
                 <span className="block text-[10px] uppercase text-[#73948a]">Sesión Activa</span>
                 <span className="font-semibold text-white">{username}</span>
               </div>
               <button
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[#2a4e58] px-2.5 py-1 text-xs font-medium text-[#e6f0c9] transition hover:bg-[#183941]"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#2a4e58] px-2.5 py-1 text-xs font-medium text-[#e6f0c9] transition hover:bg-[#183941] leading-none"
                 onClick={() => void logout()}
                 type="button"
               >
