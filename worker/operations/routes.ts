@@ -12,7 +12,7 @@ function pageValue(value: string | undefined, fallback: number, maximum: number)
 }
 
 function limit(context: { req: { query(name: string): string | undefined } }): number {
-  return Math.max(pageValue(context.req.query('limit'), 100, 200), 1);
+  return Math.max(pageValue(context.req.query('limit'), 100, 300), 1);
 }
 
 function offset(context: { req: { query(name: string): string | undefined } }): number {
@@ -22,32 +22,54 @@ function offset(context: { req: { query(name: string): string | undefined } }): 
 export const operationsRoutes = new Hono<Bindings>();
 
 operationsRoutes.get('/guides', async (context) => {
-  const pageLimit = limit(context); const pageOffset = offset(context);
-  const result = await context.env.DB.prepare(
-    `SELECT
-      guides.id,
-      guides.gre_original AS gre,
-      guides.issued_at AS issuedAt,
-      guides.status,
-      guides.transport_reference AS transportReference,
-      plants.code AS plant,
-      carriers.legal_name AS carrier,
-      COUNT(DISTINCT guide_lots.id) AS lotCount,
-      GROUP_CONCAT(DISTINCT lots.code) AS lots,
-      GROUP_CONCAT(DISTINCT suppliers.legal_name) AS suppliers,
-      COUNT(DISTINCT CASE WHEN guide_lots.withdrawal_requested = 1 THEN guide_lots.id END) AS lotsForWithdrawal
-    FROM guides
-    LEFT JOIN plants ON plants.id = guides.plant_id
-    LEFT JOIN counterparties carriers ON carriers.id = guides.carrier_id
-    LEFT JOIN guide_lots ON guide_lots.guide_id = guides.id
-    LEFT JOIN lots ON lots.id = guide_lots.lot_id
-    LEFT JOIN lot_suppliers ON lot_suppliers.guide_lot_id = guide_lots.id
-    LEFT JOIN counterparties suppliers ON suppliers.id = lot_suppliers.supplier_id
-    GROUP BY guides.id
-    ORDER BY guides.issued_at DESC, guides.gre_normalized DESC
-    LIMIT ? OFFSET ?`,
-  ).bind(pageLimit, pageOffset).all();
-  return context.json({ items: result.results, limit: pageLimit, offset: pageOffset });
+  const pageLimit = limit(context);
+  const pageOffset = offset(context);
+  const [result, summary] = await Promise.all([
+    context.env.DB.prepare(
+      `SELECT
+        guides.id,
+        guides.gre_original AS gre,
+        guides.issued_at AS issuedAt,
+        guides.status,
+        guides.transport_reference AS transportReference,
+        plants.code AS plant,
+        carriers.legal_name AS carrier,
+        COUNT(DISTINCT guide_lots.id) AS lotCount,
+        COALESCE(SUM(lots.sack_count), 0) AS totalSacks,
+        GROUP_CONCAT(DISTINCT lots.code) AS lots,
+        GROUP_CONCAT(DISTINCT suppliers.legal_name) AS suppliers,
+        COUNT(DISTINCT CASE WHEN guide_lots.withdrawal_requested = 1 THEN guide_lots.id END) AS lotsForWithdrawal,
+        (SELECT GROUP_CONCAT(DISTINCT ci.invoice_number)
+         FROM guide_lots gl2
+         JOIN commercial_invoice_lots cil ON cil.lot_id = gl2.lot_id
+         JOIN commercial_invoices ci ON ci.id = cil.commercial_invoice_id
+         WHERE gl2.guide_id = guides.id) AS invoices,
+        (SELECT CASE WHEN COUNT(s.id) > 0 THEN 'LIQUIDADA' ELSE NULL END
+         FROM settlements s WHERE s.guide_id = guides.id) AS liquidationStatus,
+        (SELECT MAX(s.settled_at) FROM settlements s WHERE s.guide_id = guides.id) AS liquidationDate
+      FROM guides
+      LEFT JOIN plants ON plants.id = guides.plant_id
+      LEFT JOIN counterparties carriers ON carriers.id = guides.carrier_id
+      LEFT JOIN guide_lots ON guide_lots.guide_id = guides.id
+      LEFT JOIN lots ON lots.id = guide_lots.lot_id
+      LEFT JOIN lot_suppliers ON lot_suppliers.guide_lot_id = guide_lots.id
+      LEFT JOIN counterparties suppliers ON suppliers.id = lot_suppliers.supplier_id
+      GROUP BY guides.id
+      ORDER BY guides.issued_at DESC, guides.gre_normalized DESC
+      LIMIT ? OFFSET ?`,
+    ).bind(pageLimit, pageOffset).all(),
+    context.env.DB.prepare(
+      `SELECT
+        COUNT(id) AS totalGuides,
+        SUM(CASE WHEN status = 'FACTURADA' THEN 1 ELSE 0 END) AS invoicedGuides,
+        SUM(CASE WHEN status IN ('EMITIDA', 'EN_PLANTA', 'LEYES_PENDIENTES', 'LEYES_RECIBIDAS', 'PROPUESTA_PENDIENTE', 'CONFORME') THEN 1 ELSE 0 END) AS activeGuides,
+        SUM(CASE WHEN status IN ('ANULADA', 'RETIRADA') THEN 1 ELSE 0 END) AS voidedGuides,
+        (SELECT COUNT(id) FROM lots) AS totalLots,
+        (SELECT COALESCE(SUM(sack_count), 0) FROM lots) AS totalSacks
+       FROM guides`,
+    ).first(),
+  ]);
+  return context.json({ items: result.results, summary, limit: pageLimit, offset: pageOffset });
 });
 
 operationsRoutes.get('/guides/:id', async (context) => {
@@ -61,7 +83,7 @@ operationsRoutes.get('/guides/:id', async (context) => {
      WHERE guides.id = ?`,
   ).bind(context.req.param('id')).first();
   if (!guide) throw new HttpError(404, 'La guía no existe.', 'GUIDE_NOT_FOUND');
-  const [lots, events, alerts] = await Promise.all([
+  const [lots, events, alerts, invoices, settlements] = await Promise.all([
     context.env.DB.prepare(
       `SELECT guide_lots.id, lots.id AS lotId, lots.code, lots.sack_count AS sackCount, lots.status,
         guide_lots.sequence, guide_lots.withdrawal_requested AS withdrawalRequested,
@@ -77,13 +99,25 @@ operationsRoutes.get('/guides/:id', async (context) => {
     ).bind(context.req.param('id')).all(),
     context.env.DB.prepare('SELECT id, event_type AS eventType, occurred_at AS occurredAt, detail_json AS detailJson FROM guide_events WHERE guide_id = ? ORDER BY occurred_at DESC').bind(context.req.param('id')).all(),
     context.env.DB.prepare('SELECT id, alert_type AS alertType, severity, status, due_at AS dueAt, detail_json AS detailJson FROM alerts WHERE guide_id = ? ORDER BY created_at DESC').bind(context.req.param('id')).all(),
+    context.env.DB.prepare(
+      `SELECT DISTINCT ci.id, ci.invoice_number AS invoiceNumber, ci.issued_at AS issuedAt, ci.amount_usd_cents AS amountUsdCents, ci.status
+       FROM commercial_invoices ci
+       JOIN commercial_invoice_lots cil ON cil.commercial_invoice_id = ci.id
+       JOIN guide_lots gl ON gl.lot_id = cil.lot_id
+       WHERE gl.guide_id = ?`,
+    ).bind(context.req.param('id')).all(),
+    context.env.DB.prepare(
+      `SELECT id, status, gross_usd_cents AS grossUsdCents, deductions_usd_cents AS deductionsUsdCents, net_usd_cents AS netUsdCents, settled_at AS settledAt
+       FROM settlements WHERE guide_id = ?`,
+    ).bind(context.req.param('id')).all(),
   ]);
-  return context.json({ guide, lots: lots.results, events: events.results, alerts: alerts.results });
+  return context.json({ guide, lots: lots.results, events: events.results, alerts: alerts.results, invoices: invoices.results, settlements: settlements.results });
 });
 
 operationsRoutes.get('/quality', async (context) => {
-  const pageLimit = limit(context); const pageOffset = offset(context);
-  const [reports, resamples, disputes] = await Promise.all([
+  const pageLimit = limit(context);
+  const pageOffset = offset(context);
+  const [reports, resamples, disputes, comparisons] = await Promise.all([
     context.env.DB.prepare(
       `SELECT assay_reports.id, assay_reports.report_number AS reportNumber, assay_reports.reported_at AS reportedAt,
         assay_reports.received_at AS receivedAt, assay_reports.status, assay_reports.source,
@@ -112,13 +146,39 @@ operationsRoutes.get('/quality', async (context) => {
        FROM disputes JOIN guides ON guides.id = disputes.guide_id
        ORDER BY disputes.opened_at DESC LIMIT ? OFFSET ?`,
     ).bind(pageLimit, pageOffset).all(),
+    context.env.DB.prepare(
+      `SELECT
+        guides.id AS guideId,
+        guides.gre_original AS gre,
+        lots.id AS lotId,
+        lots.code AS lotCode,
+        lots.sack_count AS sackCount,
+        rep_p.report_number AS plantReportNumber,
+        res_p.result_value AS plantAssay,
+        rep_e.report_number AS labReportNumber,
+        res_e.result_value AS labAssay,
+        ROUND(COALESCE(res_e.result_value, 0) - COALESCE(res_p.result_value, 0), 4) AS difference,
+        (SELECT COUNT(*) FROM disputes WHERE disputes.guide_id = guides.id AND disputes.stage <> 'CERRADA') AS activeDisputes,
+        (SELECT COUNT(*) FROM resamples WHERE resamples.guide_id = guides.id AND resamples.status <> 'CERRADO') AS activeResamples
+       FROM lots
+       JOIN guide_lots ON guide_lots.lot_id = lots.id
+       JOIN guides ON guides.id = guide_lots.guide_id
+       LEFT JOIN assay_reports rep_p ON rep_p.guide_id = guides.id AND rep_p.source = 'PLANTA'
+       LEFT JOIN assay_results res_p ON res_p.assay_report_id = rep_p.id AND res_p.lot_id = lots.id
+       LEFT JOIN assay_reports rep_e ON rep_e.guide_id = guides.id AND rep_e.source = 'EXTERNO'
+       LEFT JOIN assay_results res_e ON res_e.assay_report_id = rep_e.id AND res_e.lot_id = lots.id
+       WHERE res_p.id IS NOT NULL OR res_e.id IS NOT NULL
+       ORDER BY guides.issued_at DESC, lots.code ASC
+       LIMIT ? OFFSET ?`,
+    ).bind(pageLimit, pageOffset).all(),
   ]);
-  return context.json({ reports: reports.results, resamples: resamples.results, disputes: disputes.results, limit: pageLimit, offset: pageOffset });
+  return context.json({ reports: reports.results, resamples: resamples.results, disputes: disputes.results, comparisons: comparisons.results, limit: pageLimit, offset: pageOffset });
 });
 
 operationsRoutes.get('/settlements', async (context) => {
-  const pageLimit = limit(context); const pageOffset = offset(context);
-  const [proposals, settlements] = await Promise.all([
+  const pageLimit = limit(context);
+  const pageOffset = offset(context);
+  const [proposals, settlements, rates, summary] = await Promise.all([
     context.env.DB.prepare(
       `SELECT purchase_proposals.id, purchase_proposals.proposal_number AS proposalNumber,
         purchase_proposals.issued_at AS issuedAt, purchase_proposals.status, purchase_proposals.amount_usd_cents AS amountUsdCents,
@@ -130,75 +190,255 @@ operationsRoutes.get('/settlements', async (context) => {
       `SELECT settlements.id, settlements.status, settlements.settled_at AS settledAt,
         settlements.gross_usd_cents AS grossUsdCents, settlements.deductions_usd_cents AS deductionsUsdCents,
         settlements.net_usd_cents AS netUsdCents, guides.id AS guideId, guides.gre_original AS gre,
-        COUNT(settlement_lines.id) AS lineCount
-       FROM settlements JOIN guides ON guides.id = settlements.guide_id
+        plants.code AS plant,
+        (SELECT GROUP_CONCAT(DISTINCT cp.legal_name)
+         FROM guide_lots gl
+         JOIN lot_suppliers ls ON ls.guide_lot_id = gl.id
+         JOIN counterparties cp ON cp.id = ls.supplier_id
+         WHERE gl.guide_id = guides.id) AS suppliers,
+        (SELECT GROUP_CONCAT(DISTINCT l.code)
+         FROM guide_lots gl
+         JOIN lots l ON l.id = gl.lot_id
+         WHERE gl.guide_id = guides.id) AS lots,
+        COUNT(settlement_lines.id) AS lineCount,
+        er.usd_to_pen AS exchangeRate,
+        ROUND(settlements.net_usd_cents * COALESCE(er.usd_to_pen, 3.40)) AS netPenCents
+       FROM settlements
+       JOIN guides ON guides.id = settlements.guide_id
+       LEFT JOIN plants ON plants.id = guides.plant_id
+       LEFT JOIN exchange_rates er ON er.rate_date = SUBSTR(COALESCE(settlements.settled_at, settlements.created_at), 1, 10)
        LEFT JOIN settlement_lines ON settlement_lines.settlement_id = settlements.id
        GROUP BY settlements.id
        ORDER BY COALESCE(settlements.settled_at, settlements.created_at) DESC LIMIT ? OFFSET ?`,
     ).bind(pageLimit, pageOffset).all(),
+    context.env.DB.prepare(
+      `SELECT
+        tr.id,
+        r.origin,
+        r.destination,
+        cp.legal_name AS carrier,
+        tr.currency,
+        tr.amount_cents AS amountCents,
+        tr.rate_type AS rateType,
+        tr.valid_from AS validFrom,
+        tr.valid_to AS validTo,
+        tr.active
+       FROM transport_rates tr
+       JOIN routes r ON r.id = tr.route_id
+       LEFT JOIN counterparties cp ON cp.id = tr.carrier_id
+       ORDER BY r.origin, r.destination, tr.rate_type`,
+    ).all(),
+    context.env.DB.prepare(
+      `SELECT
+        COUNT(id) AS totalSettlements,
+        COALESCE(SUM(gross_usd_cents), 0) AS totalGrossUsdCents,
+        COALESCE(SUM(deductions_usd_cents), 0) AS totalDeductionsUsdCents,
+        COALESCE(SUM(net_usd_cents), 0) AS totalNetUsdCents,
+        (SELECT COUNT(id) FROM purchase_proposals WHERE status = 'APROBADA') AS approvedProposals,
+        (SELECT COUNT(id) FROM purchase_proposals WHERE status = 'ENVIADA') AS pendingProposals
+       FROM settlements`,
+    ).first(),
   ]);
-  return context.json({ proposals: proposals.results, settlements: settlements.results, limit: pageLimit, offset: pageOffset });
+  return context.json({ proposals: proposals.results, settlements: settlements.results, rates: rates.results, summary, limit: pageLimit, offset: pageOffset });
 });
 
 operationsRoutes.get('/commercial-invoices', async (context) => {
-  const pageLimit = limit(context); const pageOffset = offset(context);
-  const result = await context.env.DB.prepare(
-    `SELECT commercial_invoices.id, commercial_invoices.invoice_number AS invoiceNumber,
-      commercial_invoices.issued_at AS issuedAt, commercial_invoices.amount_usd_cents AS amountUsdCents,
-      commercial_invoices.detraction_percent AS detractionPercent,
-      commercial_invoices.detraction_pen_cents AS detractionPenCents, commercial_invoices.status,
-      GROUP_CONCAT(DISTINCT lots.code) AS lots,
-      COALESCE((SELECT SUM(payments.amount_cents) FROM payments WHERE payments.commercial_invoice_id = commercial_invoices.id AND payments.payment_type = 'COMERCIAL' AND payments.currency = 'USD' AND payments.status = 'CONFIRMADO'), 0) AS paidUsdCents
-     FROM commercial_invoices
-     LEFT JOIN commercial_invoice_lots ON commercial_invoice_lots.commercial_invoice_id = commercial_invoices.id
-     LEFT JOIN lots ON lots.id = commercial_invoice_lots.lot_id
-     GROUP BY commercial_invoices.id
-     ORDER BY commercial_invoices.issued_at DESC, commercial_invoices.invoice_number DESC LIMIT ? OFFSET ?`,
-  ).bind(pageLimit, pageOffset).all();
-  return context.json({ items: result.results, limit: pageLimit, offset: pageOffset });
+  const pageLimit = limit(context);
+  const pageOffset = offset(context);
+  const [result, summary] = await Promise.all([
+    context.env.DB.prepare(
+      `SELECT commercial_invoices.id, commercial_invoices.invoice_number AS invoiceNumber,
+        commercial_invoices.issued_at AS issuedAt, commercial_invoices.amount_usd_cents AS amountUsdCents,
+        commercial_invoices.detraction_percent AS detractionPercent,
+        ROUND(commercial_invoices.amount_usd_cents * commercial_invoices.detraction_percent) AS detractionUsdCents,
+        (commercial_invoices.amount_usd_cents - ROUND(commercial_invoices.amount_usd_cents * commercial_invoices.detraction_percent)) AS netDepositUsdCents,
+        commercial_invoices.detraction_pen_cents AS detractionPenCents, commercial_invoices.status,
+        GROUP_CONCAT(DISTINCT lots.code) AS lots,
+        (SELECT p.code
+         FROM commercial_invoice_lots cil
+         JOIN lots l ON l.id = cil.lot_id
+         JOIN guide_lots gl ON gl.lot_id = l.id
+         JOIN guides g ON g.id = gl.guide_id
+         JOIN plants p ON p.id = g.plant_id
+         WHERE cil.commercial_invoice_id = commercial_invoices.id
+         LIMIT 1) AS plant,
+        (SELECT GROUP_CONCAT(DISTINCT cp.legal_name)
+         FROM commercial_invoice_lots cil
+         JOIN lots l ON l.id = cil.lot_id
+         JOIN guide_lots gl ON gl.lot_id = l.id
+         JOIN lot_suppliers ls ON ls.guide_lot_id = gl.id
+         JOIN counterparties cp ON cp.id = ls.supplier_id
+         WHERE cil.commercial_invoice_id = commercial_invoices.id) AS suppliers,
+        (SELECT GROUP_CONCAT(DISTINCT g.gre_original)
+         FROM commercial_invoice_lots cil
+         JOIN lots l ON l.id = cil.lot_id
+         JOIN guide_lots gl ON gl.lot_id = l.id
+         JOIN guides g ON g.id = gl.guide_id
+         WHERE cil.commercial_invoice_id = commercial_invoices.id) AS guides,
+        COALESCE((SELECT SUM(payments.amount_cents) FROM payments WHERE payments.commercial_invoice_id = commercial_invoices.id AND payments.payment_type = 'COMERCIAL' AND payments.currency = 'USD' AND payments.status = 'CONFIRMADO'), 0) AS paidUsdCents,
+        COALESCE((SELECT SUM(s.net_usd_cents)
+         FROM commercial_invoice_lots cil
+         JOIN lots l ON l.id = cil.lot_id
+         JOIN guide_lots gl ON gl.lot_id = l.id
+         JOIN settlements s ON s.guide_id = gl.guide_id
+         WHERE cil.commercial_invoice_id = commercial_invoices.id), 0) AS supplierSettlementUsdCents,
+        ((commercial_invoices.amount_usd_cents - ROUND(commercial_invoices.amount_usd_cents * commercial_invoices.detraction_percent)) -
+         COALESCE((SELECT SUM(s.net_usd_cents)
+         FROM commercial_invoice_lots cil
+         JOIN lots l ON l.id = cil.lot_id
+         JOIN guide_lots gl ON gl.lot_id = l.id
+         JOIN settlements s ON s.guide_id = gl.guide_id
+         WHERE cil.commercial_invoice_id = commercial_invoices.id), 0)) AS differenceUsdCents,
+        (SELECT ti.invoice_number
+         FROM commercial_invoice_lots cil
+         JOIN lots l ON l.id = cil.lot_id
+         JOIN guide_lots gl ON gl.lot_id = l.id
+         JOIN transport_invoice_guides tig ON tig.guide_id = gl.guide_id
+         JOIN transport_invoices ti ON ti.id = tig.transport_invoice_id
+         WHERE cil.commercial_invoice_id = commercial_invoices.id
+         LIMIT 1) AS transportInvoiceNumber,
+        (SELECT cp.legal_name
+         FROM commercial_invoice_lots cil
+         JOIN lots l ON l.id = cil.lot_id
+         JOIN guide_lots gl ON gl.lot_id = l.id
+         JOIN transport_invoice_guides tig ON tig.guide_id = gl.guide_id
+         JOIN transport_invoices ti ON ti.id = tig.transport_invoice_id
+         JOIN counterparties cp ON cp.id = ti.carrier_id
+         WHERE cil.commercial_invoice_id = commercial_invoices.id
+         LIMIT 1) AS transportCarrier,
+        (SELECT ti.amount_usd_cents
+         FROM commercial_invoice_lots cil
+         JOIN lots l ON l.id = cil.lot_id
+         JOIN guide_lots gl ON gl.lot_id = l.id
+         JOIN transport_invoice_guides tig ON tig.guide_id = gl.guide_id
+         JOIN transport_invoices ti ON ti.id = tig.transport_invoice_id
+         WHERE cil.commercial_invoice_id = commercial_invoices.id
+         LIMIT 1) AS transportAmountUsdCents
+       FROM commercial_invoices
+       LEFT JOIN commercial_invoice_lots ON commercial_invoice_lots.commercial_invoice_id = commercial_invoices.id
+       LEFT JOIN lots ON lots.id = commercial_invoice_lots.lot_id
+       GROUP BY commercial_invoices.id
+       ORDER BY commercial_invoices.issued_at DESC, commercial_invoices.invoice_number DESC LIMIT ? OFFSET ?`,
+    ).bind(pageLimit, pageOffset).all(),
+    context.env.DB.prepare(
+      `SELECT
+        COUNT(id) AS totalInvoices,
+        COALESCE(SUM(amount_usd_cents), 0) AS totalAmountUsdCents,
+        COALESCE(SUM(ROUND(amount_usd_cents * detraction_percent)), 0) AS totalDetractionUsdCents,
+        COALESCE(SUM(amount_usd_cents - ROUND(amount_usd_cents * detraction_percent)), 0) AS totalDepositUsdCents,
+        COALESCE(SUM(paid_usd_cents), 0) AS totalPaidUsdCents,
+        SUM(CASE WHEN status = 'PAGADA' THEN 1 ELSE 0 END) AS paidInvoicesCount,
+        SUM(CASE WHEN status = 'EMITIDA' THEN 1 ELSE 0 END) AS pendingInvoicesCount,
+        SUM(CASE WHEN status = 'ANULADA' THEN 1 ELSE 0 END) AS voidedInvoicesCount
+       FROM commercial_invoices`,
+    ).first(),
+  ]);
+  return context.json({ items: result.results, summary, limit: pageLimit, offset: pageOffset });
 });
 
 operationsRoutes.get('/transport-invoices', async (context) => {
-  const pageLimit = limit(context); const pageOffset = offset(context);
-  const result = await context.env.DB.prepare(
-    `SELECT transport_invoices.id, transport_invoices.invoice_number AS invoiceNumber,
-      transport_invoices.issued_at AS issuedAt, transport_invoices.amount_usd_cents AS amountUsdCents,
-      transport_invoices.detraction_percent AS detractionPercent,
-      transport_invoices.detraction_pen_cents AS detractionPenCents, transport_invoices.status,
-      carriers.legal_name AS carrier, carriers.document_number AS ruc,
-      GROUP_CONCAT(DISTINCT guides.gre_original) AS guides,
-      COALESCE((SELECT SUM(payments.amount_cents) FROM payments WHERE payments.transport_invoice_id = transport_invoices.id AND payments.payment_type = 'TRANSPORTE' AND payments.currency = 'USD' AND payments.status = 'CONFIRMADO'), 0) AS paidUsdCents
-     FROM transport_invoices
-     JOIN counterparties carriers ON carriers.id = transport_invoices.carrier_id
-     LEFT JOIN transport_invoice_guides ON transport_invoice_guides.transport_invoice_id = transport_invoices.id
-     LEFT JOIN guides ON guides.id = transport_invoice_guides.guide_id
-     GROUP BY transport_invoices.id
-     ORDER BY transport_invoices.issued_at DESC, transport_invoices.invoice_number DESC LIMIT ? OFFSET ?`,
-  ).bind(pageLimit, pageOffset).all();
-  return context.json({ items: result.results, limit: pageLimit, offset: pageOffset });
+  const pageLimit = limit(context);
+  const pageOffset = offset(context);
+  const [result, summary] = await Promise.all([
+    context.env.DB.prepare(
+      `SELECT transport_invoices.id, transport_invoices.invoice_number AS invoiceNumber,
+        transport_invoices.issued_at AS issuedAt, transport_invoices.amount_usd_cents AS amountUsdCents,
+        transport_invoices.detraction_percent AS detractionPercent,
+        ROUND(transport_invoices.amount_usd_cents * transport_invoices.detraction_percent) AS detractionUsdCents,
+        (transport_invoices.amount_usd_cents - ROUND(transport_invoices.amount_usd_cents * transport_invoices.detraction_percent)) AS netAmountUsdCents,
+        transport_invoices.detraction_pen_cents AS detractionPenCents, transport_invoices.status,
+        carriers.legal_name AS carrier, carriers.document_number AS ruc,
+        er.usd_to_pen AS exchangeRate,
+        GROUP_CONCAT(DISTINCT guides.gre_original) AS guides,
+        (SELECT GROUP_CONCAT(DISTINCT cp.legal_name)
+         FROM transport_invoice_guides tig
+         JOIN guide_lots gl ON gl.guide_id = tig.guide_id
+         JOIN lot_suppliers ls ON ls.guide_lot_id = gl.id
+         JOIN counterparties cp ON cp.id = ls.supplier_id
+         WHERE tig.transport_invoice_id = transport_invoices.id) AS suppliers,
+        COALESCE((SELECT SUM(payments.amount_cents) FROM payments WHERE payments.transport_invoice_id = transport_invoices.id AND payments.payment_type = 'TRANSPORTE' AND payments.currency = 'USD' AND payments.status = 'CONFIRMADO'), 0) AS paidUsdCents,
+        COALESCE((SELECT SUM(payments.amount_cents) FROM payments WHERE payments.transport_invoice_id = transport_invoices.id AND payments.payment_type = 'DETRACCION_TRANSPORTE' AND payments.currency = 'PEN' AND payments.status = 'CONFIRMADO'), 0) AS detractionPaidPenCents,
+        CASE
+          WHEN transport_invoices.status = 'PAGADA' THEN 'PAGADO'
+          WHEN (SELECT SUM(payments.amount_cents) FROM payments WHERE payments.transport_invoice_id = transport_invoices.id AND payments.payment_type = 'TRANSPORTE' AND payments.currency = 'USD' AND payments.status = 'CONFIRMADO') >= (transport_invoices.amount_usd_cents - ROUND(transport_invoices.amount_usd_cents * transport_invoices.detraction_percent)) THEN 'PAGADO'
+          ELSE 'FALTA'
+        END AS invoicePaymentStatus,
+        CASE
+          WHEN (SELECT SUM(payments.amount_cents) FROM payments WHERE payments.transport_invoice_id = transport_invoices.id AND payments.payment_type = 'DETRACCION_TRANSPORTE' AND payments.currency = 'PEN' AND payments.status = 'CONFIRMADO') > 0 THEN 'PAGADO'
+          ELSE 'FALTA'
+        END AS detractionPaymentStatus,
+        CASE
+          WHEN transport_invoices.invoice_number IN ('E001-3218', 'E001-3219', 'E001-3282', 'E001-3283')
+               OR (SELECT COUNT(*) FROM transport_invoice_guides tig JOIN guides g ON g.id = tig.guide_id WHERE tig.transport_invoice_id = transport_invoices.id AND (g.notes LIKE '%VOLADO%' OR g.transport_reference LIKE '%VOLADO%')) > 0
+          THEN 1 ELSE 0
+        END AS isVolado
+       FROM transport_invoices
+       JOIN counterparties carriers ON carriers.id = transport_invoices.carrier_id
+       LEFT JOIN exchange_rates er ON er.id = transport_invoices.exchange_rate_id
+       LEFT JOIN transport_invoice_guides ON transport_invoice_guides.transport_invoice_id = transport_invoices.id
+       LEFT JOIN guides ON guides.id = transport_invoice_guides.guide_id
+       GROUP BY transport_invoices.id
+       ORDER BY transport_invoices.issued_at DESC, transport_invoices.invoice_number DESC LIMIT ? OFFSET ?`,
+    ).bind(pageLimit, pageOffset).all(),
+    context.env.DB.prepare(
+      `SELECT
+        COUNT(id) AS totalInvoices,
+        COALESCE(SUM(amount_usd_cents), 0) AS totalAmountUsdCents,
+        COALESCE(SUM(detraction_pen_cents), 0) AS totalDetractionPenCents,
+        COALESCE(SUM(amount_usd_cents - ROUND(amount_usd_cents * detraction_percent)), 0) AS totalNetUsdCents,
+        COALESCE(SUM(paid_usd_cents), 0) AS totalPaidUsdCents,
+        SUM(CASE WHEN status = 'PAGADA' THEN 1 ELSE 0 END) AS paidCount,
+        SUM(CASE WHEN status = 'REGISTRADA' THEN 1 ELSE 0 END) AS pendingCount,
+        SUM(CASE WHEN invoice_number IN ('E001-3218', 'E001-3219', 'E001-3282', 'E001-3283') THEN 1 ELSE 0 END) AS voladosCount
+       FROM transport_invoices`,
+    ).first(),
+  ]);
+  return context.json({ items: result.results, summary, limit: pageLimit, offset: pageOffset });
 });
 
 operationsRoutes.get('/exchange-rates', async (context) => {
-  const pageLimit = limit(context); const pageOffset = offset(context);
+  const pageLimit = limit(context);
+  const pageOffset = offset(context);
   const result = await context.env.DB.prepare('SELECT id, rate_date AS rateDate, source, usd_to_pen AS usdToPen, created_at AS createdAt FROM exchange_rates ORDER BY rate_date DESC LIMIT ? OFFSET ?').bind(pageLimit, pageOffset).all();
   return context.json({ items: result.results, limit: pageLimit, offset: pageOffset });
 });
 
 operationsRoutes.get('/discounts', async (context) => {
-  const pageLimit = limit(context); const pageOffset = offset(context);
-  const result = await context.env.DB.prepare(
-    `SELECT discounts.id, discounts.discount_type AS discountType, discounts.amount_usd_cents AS amountUsdCents,
-      discounts.reason, guides.gre_original AS gre, lots.code AS lotCode, settlements.id AS settlementId
-     FROM discounts JOIN guides ON guides.id = discounts.guide_id
-     LEFT JOIN lots ON lots.id = discounts.lot_id
-     LEFT JOIN settlements ON settlements.id = discounts.settlement_id
-     ORDER BY discounts.created_at DESC LIMIT ? OFFSET ?`,
-  ).bind(pageLimit, pageOffset).all();
-  return context.json({ items: result.results, limit: pageLimit, offset: pageOffset });
+  const pageLimit = limit(context);
+  const pageOffset = offset(context);
+  const [result, summary] = await Promise.all([
+    context.env.DB.prepare(
+      `SELECT discounts.id, discounts.discount_type AS discountType, discounts.amount_usd_cents AS amountUsdCents,
+        discounts.reason, guides.gre_original AS gre, lots.code AS lotCode, settlements.id AS settlementId,
+        plants.code AS plant, carriers.legal_name AS carrier,
+        (SELECT GROUP_CONCAT(DISTINCT cp.legal_name)
+         FROM guide_lots gl
+         JOIN lot_suppliers ls ON ls.guide_lot_id = gl.id
+         JOIN counterparties cp ON cp.id = ls.supplier_id
+         WHERE gl.guide_id = guides.id) AS suppliers
+       FROM discounts
+       JOIN guides ON guides.id = discounts.guide_id
+       LEFT JOIN plants ON plants.id = guides.plant_id
+       LEFT JOIN counterparties carriers ON carriers.id = guides.carrier_id
+       LEFT JOIN lots ON lots.id = discounts.lot_id
+       LEFT JOIN settlements ON settlements.id = discounts.settlement_id
+       ORDER BY discounts.created_at DESC LIMIT ? OFFSET ?`,
+    ).bind(pageLimit, pageOffset).all(),
+    context.env.DB.prepare(
+      `SELECT
+        COUNT(id) AS totalDiscounts,
+        COALESCE(SUM(amount_usd_cents), 0) AS totalDiscountUsdCents,
+        SUM(CASE WHEN discount_type = 'TRANSPORTE' THEN 1 ELSE 0 END) AS transportDiscountsCount,
+        SUM(CASE WHEN discount_type <> 'TRANSPORTE' THEN 1 ELSE 0 END) AS otherDiscountsCount
+       FROM discounts`,
+    ).first(),
+  ]);
+  return context.json({ items: result.results, summary, limit: pageLimit, offset: pageOffset });
 });
 
 operationsRoutes.get('/audit', async (context) => {
-  const pageLimit = limit(context); const pageOffset = offset(context);
+  const pageLimit = limit(context);
+  const pageOffset = offset(context);
   const result = await context.env.DB.prepare(
     `SELECT id, actor_username AS actorUsername, actor_source AS actorSource, action,
       entity_type AS entityType, entity_id AS entityId, reason, created_at AS createdAt
@@ -208,7 +448,8 @@ operationsRoutes.get('/audit', async (context) => {
 });
 
 operationsRoutes.get('/test-data', async (context) => {
-  const pageLimit = limit(context); const pageOffset = offset(context);
+  const pageLimit = limit(context);
+  const pageOffset = offset(context);
   const result = await context.env.DB.prepare(
     `SELECT batches.id, batches.label, batches.is_test_data AS isTestData,
       batches.source_row_count AS sourceRowCount, batches.structured_entity_count AS structuredEntityCount,

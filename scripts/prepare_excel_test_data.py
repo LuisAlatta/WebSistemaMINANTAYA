@@ -128,10 +128,11 @@ def sql(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def insert(table: str, values: dict[str, Any]) -> str:
+def insert(table: str, values: dict[str, Any], or_ignore: bool = False) -> str:
+    verb = "INSERT OR IGNORE INTO" if or_ignore or table in {"plants", "counterparties", "audit_logs"} else "INSERT INTO"
     columns = ", ".join(values)
     rendered = ", ".join(sql(value) for value in values.values())
-    return f"INSERT INTO {table} ({columns}) VALUES ({rendered});"
+    return f"{verb} {table} ({columns}) VALUES ({rendered});"
 
 
 class ImportPlan:
@@ -654,7 +655,10 @@ def build_plan(source_dir: Path, batch_id: str, now: str) -> tuple[ImportPlan, l
             continue
         values = row + [None] * max(0, 6 - len(row))
         if gre := normalize_gre(values[0]):
-            current_gre = gre
+            if gre == "EG03-1216" and "EG07-365" in guide_ids:
+                current_gre = "EG07-365"
+            else:
+                current_gre = gre
         lot_code = normalize_lot(values[1])
         if not current_gre or not lot_code:
             continue
@@ -678,6 +682,151 @@ def build_plan(source_dir: Path, batch_id: str, now: str) -> tuple[ImportPlan, l
             plan.entity_count += 1
             plan.map_entity("assay_report", report_id, row_source_id, f"{current_gre}:{source_kind}")
             plan.map_entity("assay_result", result_id, row_source_id, lot_code)
+
+    routes_data = [
+        ("CHALA", "ANALYTICA", "Ruta Chala a Analytica"),
+        ("APLAO", "COLIBRI", "Ruta Aplao a Colibrí"),
+        ("CHAPARRA", "COLIBRI", "Ruta Chaparra a Colibrí"),
+    ]
+    route_ids: dict[tuple[str, str], str] = {}
+    for origin, dest, desc in routes_data:
+        rid = plan.uid(f"route:{origin}:{dest}")
+        route_ids[(origin, dest)] = rid
+        plan.add_statement("routes", {
+            "id": rid,
+            "origin": origin,
+            "destination": dest,
+            "description": desc,
+            "active": 1,
+            "created_at": now,
+            "updated_at": now,
+        })
+        plan.entity_count += 1
+        plan.map_entity("route", rid, source_key=f"{origin}:{dest}")
+
+    rates_data = [
+        ("WIRACOCHA", "CHALA", "ANALYTICA", "REAL", 4500),
+        ("WIRACOCHA", "CHALA", "ANALYTICA", "DESCUENTO", 4700),
+        ("WIRACOCHA", "APLAO", "COLIBRI", "REAL", 3500),
+        ("WIRACOCHA", "APLAO", "COLIBRI", "DESCUENTO", 3700),
+        ("GIANGER", "CHALA", "ANALYTICA", "REAL", 6500),
+        ("GIANGER", "CHALA", "ANALYTICA", "DESCUENTO", 6700),
+        ("GIANGER", "APLAO", "COLIBRI", "REAL", 5300),
+        ("GIANGER", "APLAO", "COLIBRI", "DESCUENTO", 5500),
+        ("GIANGER", "CHAPARRA", "COLIBRI", "REAL", 7000),
+        ("GIANGER", "CHAPARRA", "COLIBRI", "DESCUENTO", 7200),
+    ]
+    for carrier_name, origin, dest, rate_type, amount in rates_data:
+        cid = ensure_counterparty(plan, counterparties, "TRANSPORTISTA", carrier_name, None)
+        rid = route_ids.get((origin, dest))
+        if rid and cid:
+            tr_id = plan.uid(f"transport-rate:{carrier_name}:{origin}:{dest}:{rate_type}")
+            plan.add_statement("transport_rates", {
+                "id": tr_id,
+                "route_id": rid,
+                "carrier_id": cid,
+                "currency": "USD",
+                "amount_cents": amount,
+                "rate_type": rate_type,
+                "valid_from": "2026-06-01",
+                "active": 1,
+                "created_at": now,
+                "updated_at": now,
+            })
+            plan.entity_count += 1
+            plan.map_entity("transport_rate", tr_id, source_key=f"{carrier_name}:{origin}:{dest}:{rate_type}")
+
+    settlement_configs = [
+        (
+            "EG07-342",
+            3694065,
+            178512,
+            3515553,
+            [("849", 29520), ("850", 31010), ("852", 30340), ("853", 29600), ("854", 29900), ("855", 28224)],
+            "HUBERTREYNA COLIBRI ",
+        ),
+        (
+            "EG07-355",
+            3071372,
+            155760,
+            2915612,
+            [("901", 27900), ("902", 28100), ("903", 26130), ("904", 24900), ("905", 24300), ("906", 24430)],
+            "HUBERTREYNA COLIBRI ",
+        ),
+        (
+            "EG07-356",
+            3045741,
+            109460,
+            2936281,
+            [("911", 26600), ("912", 26736), ("913", 27024), ("914", 29100)],
+            "SERGIOMACARIO COLIBRI ",
+        ),
+        (
+            "EG07-366",
+            3882667,
+            207900,
+            3674767,
+            [("PPO 68268", 82260), ("PPO 68272", 84540), ("PPO 68276", 41100)],
+            "DESCUENTO TOTAL",
+        ),
+    ]
+
+    for gre_norm, gross, deductions, net, lot_discounts, sheet_name in settlement_configs:
+        gid = guide_ids.get(gre_norm)
+        if not gid:
+            continue
+        sid = plan.uid(f"settlement:{gre_norm}")
+        plan.add_statement("settlements", {
+            "id": sid,
+            "guide_id": gid,
+            "status": "APROBADA",
+            "settled_at": f"2026-09-02T00:00:00.000Z",
+            "gross_usd_cents": gross,
+            "deductions_usd_cents": deductions,
+            "net_usd_cents": net,
+            "created_at": now,
+            "updated_at": now,
+        })
+        plan.entity_count += 1
+        plan.map_entity("settlement", sid, source_key=f"{sheet_name}:{gre_norm}")
+
+        plan.add_statement("settlement_lines", {
+            "id": plan.uid(f"settlement-line:{sid}:metal"),
+            "settlement_id": sid,
+            "line_type": "METAL",
+            "description": f"Valoración mineral liquidación {gre_norm}",
+            "amount_usd_cents": gross,
+            "created_at": now,
+        })
+        plan.entity_count += 1
+
+        if deductions > 0:
+            plan.add_statement("settlement_lines", {
+                "id": plan.uid(f"settlement-line:{sid}:flete"),
+                "settlement_id": sid,
+                "line_type": "DESCUENTO",
+                "description": f"Descuento de flete transporte {gre_norm}",
+                "amount_usd_cents": -deductions,
+                "created_at": now,
+            })
+            plan.entity_count += 1
+
+        for lot_code, disc_amt in lot_discounts:
+            lid = lot_ids.get(lot_code)
+            disc_id = plan.uid(f"discount:{sid}:{lot_code}")
+            plan.add_statement("discounts", {
+                "id": disc_id,
+                "settlement_id": sid,
+                "guide_id": gid,
+                "lot_id": lid,
+                "discount_type": "TRANSPORTE",
+                "amount_usd_cents": disc_amt,
+                "reason": f"Descuento flete según cuadro Excel {sheet_name.strip()}",
+                "created_at": now,
+                "updated_at": now,
+            })
+            plan.entity_count += 1
+            plan.map_entity("discount", disc_id, source_key=f"{sheet_name}:{lot_code}")
 
     for issue in plan.issues:
         plan.add_statement("test_data_quality_issues", issue)
@@ -710,21 +859,26 @@ def render_import_sql(plan: ImportPlan, manifest: list[dict[str, Any]]) -> str:
         "test_data_source_rows": 1,
         "plants": 2,
         "counterparties": 3,
-        "exchange_rates": 4,
-        "lots": 5,
-        "guides": 6,
-        "guide_events": 7,
-        "guide_lots": 8,
-        "lot_suppliers": 9,
-        "assay_reports": 10,
-        "assay_results": 11,
-        "commercial_invoices": 12,
-        "commercial_invoice_lots": 13,
-        "transport_invoices": 14,
-        "transport_invoice_guides": 15,
-        "payments": 16,
-        "test_data_entity_map": 17,
-        "test_data_quality_issues": 18,
+        "routes": 4,
+        "transport_rates": 5,
+        "exchange_rates": 6,
+        "lots": 7,
+        "guides": 8,
+        "guide_events": 9,
+        "guide_lots": 10,
+        "lot_suppliers": 11,
+        "assay_reports": 12,
+        "assay_results": 13,
+        "settlements": 14,
+        "settlement_lines": 15,
+        "discounts": 16,
+        "commercial_invoices": 17,
+        "commercial_invoice_lots": 18,
+        "transport_invoices": 19,
+        "transport_invoice_guides": 20,
+        "payments": 21,
+        "test_data_entity_map": 22,
+        "test_data_quality_issues": 23,
     }
     ordered = [statement for _, (_, statement) in sorted(enumerate(plan.statements), key=lambda item: (table_order[item[1][0]], item[0]))]
     # D1 ejecuta los archivos remotos como importaciones atómicas y no admite
@@ -775,6 +929,8 @@ def render_cleanup_sql(batch_id: str, now: str) -> str:
         f"DELETE FROM test_data_quality_issues WHERE batch_id = {sql(batch_id)};",
         f"DELETE FROM test_data_entity_map WHERE batch_id = {sql(batch_id)};",
         f"DELETE FROM test_data_source_rows WHERE batch_id = {sql(batch_id)};",
+        f"DELETE FROM transport_rates WHERE id IN {ids('transport_rate')};",
+        f"DELETE FROM routes WHERE id IN {ids('route')};",
         f"DELETE FROM test_data_import_batches WHERE id = {sql(batch_id)};",
     ]
     return "\n".join(["PRAGMA foreign_keys = ON;", audit, *deletes, ""])

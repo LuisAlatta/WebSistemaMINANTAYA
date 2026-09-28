@@ -9,4 +9,8 @@ coverage/
 tmp/
 __pycache__/
 .Codex/
+.claude/
+.gemini/
+CLAUDE.md
+GEMINI.md
 Recursos/
